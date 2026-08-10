@@ -75,12 +75,12 @@ class NodeQueue:
     def list(self, state: str = "") -> List[Dict[str, Any]]:
         if state:
             rows = self.conn.execute(
-                "SELECT * FROM node_tasks WHERE state=? ORDER BY submitted_at",
+                "SELECT * FROM node_tasks WHERE state=? ORDER BY submitted_at, rowid",
                 (state,),
             ).fetchall()
         else:
             rows = self.conn.execute(
-                "SELECT * FROM node_tasks ORDER BY submitted_at",
+                "SELECT * FROM node_tasks ORDER BY submitted_at, rowid",
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -129,9 +129,12 @@ class NodeQueue:
         if not row:
             return 0
         result = self.conn.execute(
-            """SELECT COUNT(*) AS c FROM node_tasks
-               WHERE node_id=? AND state='queued' AND submitted_at <= ?""",
-            (row["node_id"], row["submitted_at"]),
+            """SELECT COUNT(*) AS c FROM node_tasks AS q
+               WHERE q.node_id=? AND q.state='queued'
+                 AND (q.submitted_at < ? OR
+                      (q.submitted_at = ? AND q.rowid <=
+                       (SELECT rowid FROM node_tasks WHERE id=?)))""",
+            (row["node_id"], row["submitted_at"], row["submitted_at"], row["id"]),
         ).fetchone()
         return int(result["c"] or 0)
 
@@ -142,7 +145,7 @@ class NodeQueue:
             row = self.conn.execute(
                 """SELECT * FROM node_tasks
                    WHERE node_id=? AND state='queued'
-                   ORDER BY submitted_at LIMIT 1""",
+                   ORDER BY submitted_at, rowid LIMIT 1""",
                 (node_id,),
             ).fetchone()
             if not row:

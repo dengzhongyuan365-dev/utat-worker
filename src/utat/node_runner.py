@@ -16,6 +16,7 @@ from .node_queue import NodeQueue
 from .runner.at_runner import ATRunner
 from .runner.ut_runner import UTRunner
 from .timeutil import now_iso
+from .task_payload import normalize_payload, validate_payload
 
 
 class NodeRunner:
@@ -43,8 +44,9 @@ class NodeRunner:
         )
 
     def submit(self, payload: Dict[str, Any], *, auto_start: bool = True) -> Dict[str, Any]:
-        payload = dict(payload)
+        payload = normalize_payload(payload)
         payload["node_id"] = payload.get("node_id") or self.node_id
+        validate_payload(payload)
         task = self.queue.submit(payload)
         task["queue_position"] = self.queue.queue_position(task["id"])
         if auto_start:

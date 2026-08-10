@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import shlex
 import signal
 import subprocess
 import tarfile
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..timeutil import now_iso
+from ..task_payload import resolve_environment
 
 
 class TaskRunner:
@@ -41,6 +43,43 @@ class TaskRunner:
         self.write_json("state.json", state)
         if self.heartbeat:
             self.heartbeat(state)
+
+    def task_environment(self) -> Dict[str, str]:
+        return resolve_environment(self.task)
+
+    def run_command_if_present(self, key: str, root: Path, *, log_name: str, phase: str) -> tuple[int, Optional[Path]]:
+        command = str(self.task.get(key) or "").strip()
+        if not command or not self.task.get("build_enabled", True):
+            return 0, None
+        log = self.logs_dir / log_name
+        rc = self.run_process(["bash", "-lc", command], cwd=root, log_path=log, env=self.task_environment(), phase=phase)
+        return rc, log
+
+    def run_build_steps(self, root: Path) -> tuple[int, List[Path]]:
+        logs: List[Path] = []
+        for key, log_name, phase in (("build_command", "build.log", "build"), ("package_command", "package.log", "package"), ("install_command", "install.log", "install")):
+            rc, log = self.run_command_if_present(key, root, log_name=log_name, phase=phase)
+            if log:
+                logs.append(log)
+            if rc != 0:
+                return rc, logs
+        return 0, logs
+
+    def run_build_pipeline(self, root: Path) -> tuple[int, List[Path]]:
+        logs: List[Path] = []
+        commands = [
+            ("dependency_command", "build-dep.log", "build-dep"),
+            ("build_command", "build.log", "build"),
+            ("package_command", "package.log", "package"),
+            ("install_command", "install.log", "install"),
+        ]
+        for key, log_name, phase in commands:
+            rc, log = self.run_command_if_present(key, root, log_name=log_name, phase=phase)
+            if log:
+                logs.append(log)
+            if rc != 0:
+                return rc, logs
+        return 0, logs
 
     def run_process(self, cmd: List[str] | str, *, cwd: Path, log_path: Path, env: Optional[Dict[str, str]] = None, shell: bool = False, phase: str = "running") -> int:
         full_env = os.environ.copy()
@@ -73,35 +112,52 @@ class TaskRunner:
 
     def prepare_source(self) -> tuple[Path, int, Path]:
         root = self.project_root()
-        repo = self.task.get("repo") or ""
-        branch = self.task.get("branch") or "master"
+        repo = str(self.task.get("repo") or "")
+        branch = str(self.task.get("branch") or "master")
+        commit = str(self.task.get("commit") or "")
+        mode = str(self.task.get("execution_mode") or self.task.get("validation_mode") or "full").lower()
+        no_update = bool(self.task.get("no_code_update")) or mode in {"specified", "version", "fixed", "no_update"}
         log = self.logs_dir / "source-sync.log"
         env = {}
         if "github.com" in repo:
-            env["https_proxy"] = "http://proxy02.uniontech.com:3128"
-            env["http_proxy"] = "http://proxy02.uniontech.com:3128"
+            env["https_proxy"] = os.environ.get("https_proxy", "http://proxy02.uniontech.com:3128")
+            env["http_proxy"] = os.environ.get("http_proxy", "http://proxy02.uniontech.com:3128")
+
         if root.exists() and (root / ".git").exists():
-            cmd = f"git fetch --all --prune && git checkout {branch} && git reset --hard origin/{branch} && git status --short && git rev-parse HEAD"
+            if no_update:
+                cmd = "git status --short; git rev-parse HEAD"
+                if commit:
+                    cmd = f"git checkout --detach {shlex.quote(commit)}; git status --short; git rev-parse HEAD"
+                rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, env=env, phase="source-check")
+                return root, rc, log
+            target = commit or f"origin/{branch}"
+            fetch = "git fetch --all --prune"
+            checkout = f"git checkout {shlex.quote(branch)} && git reset --hard {shlex.quote(target)}"
+            cmd = f"{fetch} && {checkout} && git status --short && git rev-parse HEAD"
             rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, env=env, phase="source-sync")
             return root, rc, log
+        if no_update:
+            log.write_text(f"[{now_iso()}] 指定版本/不更新模式要求已有仓库，但不存在：{root}\n", encoding="utf-8")
+            return root, 2, log
         if not repo:
-            log.write_text(f"[{now_iso()}] repo empty and {root} not git repo\n", encoding="utf-8")
+            log.write_text(f"[{now_iso()}] repo 为空，且 {root} 不是 git 仓库\n", encoding="utf-8")
             return root, 2, log
         root.parent.mkdir(parents=True, exist_ok=True)
-        cmd = f"git clone --branch {branch} {repo} {root} && git -C {root} rev-parse HEAD"
+        cmd = f"git clone --branch {shlex.quote(branch)} {shlex.quote(repo)} {shlex.quote(str(root))} && git -C {shlex.quote(str(root))} rev-parse HEAD"
         rc = self.run_process(["bash", "-lc", cmd], cwd=root.parent, log_path=log, env=env, phase="source-clone")
         return root, rc, log
 
     def install_build_deps(self, root: Path) -> tuple[int, Path]:
         log = self.logs_dir / "build-dep.log"
-        if not (root / "debian" / "control").exists():
-            log.write_text(f"[{now_iso()}] debian/control not found, skip apt build-dep .\n", encoding="utf-8")
+        command = str(self.task.get("dependency_command") or "").strip()
+        if not command and (root / "debian" / "control").exists():
+            command = "sudo apt build-dep -y ."
+        if not command:
+            log.write_text(f"[{now_iso()}] 未配置依赖安装命令，或项目没有 debian/control，跳过依赖安装。\n", encoding="utf-8")
             return 0, log
-        if os.environ.get("INSTALL_PASSWORD"):
-            cmd = "printf '%s\\n' \"$INSTALL_PASSWORD\" | sudo -S apt build-dep -y ."
-        else:
-            cmd = "sudo -n apt build-dep -y ."
-        rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, phase="build-dep")
+        if os.environ.get("INSTALL_PASSWORD") and "sudo" in command:
+            command = f"printf '%s\n' \"$INSTALL_PASSWORD\" | sudo -S {command.split('sudo', 1)[1].lstrip()}"
+        rc = self.run_process(["bash", "-lc", command], cwd=root, log_path=log, env=self.task_environment(), phase="build-dep")
         return rc, log
 
     def tar_dir(self, source: Path, target_name: str) -> Optional[Path]:

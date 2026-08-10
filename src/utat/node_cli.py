@@ -11,6 +11,7 @@ from typing import Any, Dict
 from .config import DEFAULT_NODE_DB, DEFAULT_NODE_HOME, load_config
 from .node_queue import NodeQueue
 from .node_runner import NodeRunner, run_node_worker
+from .task_payload import load_payload_file, normalize_payload, validate_payload
 
 
 def _runner(args: argparse.Namespace) -> NodeRunner:
@@ -30,23 +31,35 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_submit(args: argparse.Namespace) -> None:
-    runner = _runner(args)
-    payload: Dict[str, Any] = {
+    payload: Dict[str, Any] = load_payload_file(args.payload_file) if args.payload_file else {}
+
+    overrides = {
         "issue_id": args.issue_id,
         "root_issue_id": args.root_issue_id,
         "app_issue_id": args.app_issue_id,
         "task_type": args.task_type,
         "app_name": args.app_name,
-        "node_id": args.node or args.node_id or runner.node_id,
+        "node_id": args.node or args.node_id,
         "repo": args.repo,
         "branch": args.branch,
         "project_root": args.project_root,
         "validation_mode": args.validation_mode,
         "test_scope": args.test_scope,
         "test_script": args.test_script,
-        "no_code_update": args.no_code_update,
-        "env": dict(item.split("=", 1) for item in args.env if "=" in item),
     }
+    for key, value in overrides.items():
+        if value not in (None, ""):
+            payload[key] = value
+    if args.no_code_update:
+        payload["no_code_update"] = True
+    if args.env:
+        env = dict(payload.get("environment") or payload.get("env") or {})
+        env.update(dict(item.split("=", 1) for item in args.env if "=" in item))
+        payload["environment"] = env
+
+    payload = normalize_payload(payload)
+    validate_payload(payload)
+    runner = _runner(args)
     task = runner.submit(payload, auto_start=not args.no_auto_start)
     task["queue_position"] = runner.queue.queue_position(task["id"])
     print(json.dumps({
@@ -89,17 +102,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("submit")
-    s.add_argument("--issue-id", required=True)
-    s.add_argument("--root-issue-id", default="")
-    s.add_argument("--app-issue-id", default="")
-    s.add_argument("--task-type", choices=["AT", "UT"], required=True)
-    s.add_argument("--app-name", required=True)
-    s.add_argument("--repo", default="")
-    s.add_argument("--branch", default="master")
-    s.add_argument("--project-root", default="")
-    s.add_argument("--validation-mode", default="full")
-    s.add_argument("--test-scope", default="全部 suite")
-    s.add_argument("--test-script", default="")
+    s.add_argument("--payload-file", default="", help="结构化任务 JSON 文件")
+    s.add_argument("--issue-id", default=None)
+    s.add_argument("--root-issue-id", default=None)
+    s.add_argument("--app-issue-id", default=None)
+    s.add_argument("--task-type", choices=["AT", "UT"], default=None)
+    s.add_argument("--app-name", default=None)
+    s.add_argument("--repo", default=None)
+    s.add_argument("--branch", default=None)
+    s.add_argument("--project-root", default=None)
+    s.add_argument("--validation-mode", default=None)
+    s.add_argument("--test-scope", default=None)
+    s.add_argument("--test-script", default=None)
     s.add_argument("--no-code-update", action="store_true")
     s.add_argument("--env", action="append", default=[])
     s.add_argument("--node", default="")

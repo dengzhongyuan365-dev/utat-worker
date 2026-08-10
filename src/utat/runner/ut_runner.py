@@ -12,22 +12,30 @@ from ..timeutil import now_iso
 class UTRunner(TaskRunner):
     def run(self) -> Dict[str, Any]:
         self.write_json("task.json", self.task)
+        try:
+            task_env = self.task_environment()
+        except ValueError as exc:
+            return self._result("blocked", "environment-invalid", [self._write_error(str(exc))])
         root, rc, source_log = self.prepare_source()
         if rc != 0:
             return self._result("failed", "source-sync-failed", [source_log])
         dep_rc, dep_log = self.install_build_deps(root)
         if dep_rc != 0:
             return self._result("failed", "dependency-install-failed", [source_log, dep_log])
+        build_rc, build_logs = self.run_build_steps(root)
+        if build_rc != 0:
+            return self._result("failed", "build-or-install-failed", [source_log, dep_log, *build_logs])
         script = self._find_script(root)
         if not script:
             msg = self.logs_dir / "ut-run.log"
             msg.write_text("未找到 UT 测试脚本。优先查找 TEST_SCRIPT、tests/local-test.sh、local-test.sh。\n", encoding="utf-8")
             return self._result("failed", "test-script-not-found", [source_log, dep_log, msg])
         log = self.logs_dir / "ut-run.log"
-        cmd = f"chmod +x '{script}' 2>/dev/null || true; bash '{script}'"
-        rc = self.run_process(["bash", "-lc", cmd], cwd=script.parent, log_path=log, phase="ut-running")
+        explicit = str(self.task.get("test_command") or "").strip()
+        cmd = explicit or f"chmod +x {__import__('shlex').quote(str(script))} 2>/dev/null || true; bash {__import__('shlex').quote(str(script))}"
+        rc = self.run_process(["bash", "-lc", cmd], cwd=script.parent, log_path=log, env=task_env, phase="ut-running")
         parsed = parse_ut_log(log)
-        artifacts: List[Path] = [source_log, dep_log, log]
+        artifacts: List[Path] = [source_log, dep_log, *build_logs, log]
         # Common coverage/report dirs.
         for rel in ["tests/build-qt6/coverage", "build/coverage", "build-ut/coverage", "tests/build-qt6/report"]:
             tar = self.tar_dir(root / rel, rel.replace("/", "-") + ".tar.gz")
@@ -35,6 +43,11 @@ class UTRunner(TaskRunner):
                 artifacts.append(tar)
         status = "done" if rc == 0 and parsed.get("failed", 0) == 0 and parsed.get("crashed", 0) == 0 else "failed"
         return self._result(status, "ut-finished", artifacts, exit_code=rc, metrics=parsed)
+
+    def _write_error(self, message: str) -> Path:
+        path = self.logs_dir / "environment-error.log"
+        path.write_text(message + "\n", encoding="utf-8")
+        return path
 
     def _find_script(self, root: Path) -> Path | None:
         script = (self.task.get("test_script") or "").strip()
