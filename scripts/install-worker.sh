@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/dengzhongyuan365-dev/utat-worker.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/WorkSpace/utat-worker}"
 CONFIG_DIR="${CONFIG_DIR:-$HOME/.utat-worker}"
+SKIP_REPO_FETCH="${SKIP_REPO_FETCH:-0}"
 
 mkdir -p "$CONFIG_DIR"
 CLONE_URL="$REPO_URL"
@@ -12,10 +13,15 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [[ "$REPO_URL" == https://github.com/* ]]; then
   CLONE_URL="${REPO_URL/https:\\/\\/github.com\\//https:\\/\\/x-access-token:${GITHUB_TOKEN}@github.com\\/}"
 fi
 
-if [ ! -d "$INSTALL_DIR/.git" ]; then
-  git clone "$CLONE_URL" "$INSTALL_DIR"
-else
-  git -C "$INSTALL_DIR" pull --ff-only
+if [ "$SKIP_REPO_FETCH" != "1" ]; then
+  if [ ! -d "$INSTALL_DIR/.git" ]; then
+    git clone "$CLONE_URL" "$INSTALL_DIR"
+  else
+    git -C "$INSTALL_DIR" pull --ff-only
+  fi
+elif [ ! -f "$INSTALL_DIR/pyproject.toml" ]; then
+  echo "SKIP_REPO_FETCH=1 but $INSTALL_DIR is not a worker source directory" >&2
+  exit 2
 fi
 
 python3 -m venv "$CONFIG_DIR/venv"

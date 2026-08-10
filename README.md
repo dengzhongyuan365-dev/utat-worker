@@ -49,9 +49,11 @@ curl --http1.1 --retry 5 --retry-all-errors -fL \
   https://codeload.github.com/dengzhongyuan365-dev/utat-worker/tar.gz/refs/heads/master \
   -o "$tmp/utat-worker.tar.gz"
 tar -xzf "$tmp/utat-worker.tar.gz" -C "$tmp"
-REPO_URL="https://github.com/dengzhongyuan365-dev/utat-worker.git" \
-INSTALL_DIR="$HOME/WorkSpace/utat-worker" \
-bash "$tmp/utat-worker-master/scripts/install-worker.sh"
+mkdir -p "$HOME/WorkSpace/utat-worker-archive"
+cp -a "$tmp/utat-worker-master/." "$HOME/WorkSpace/utat-worker-archive/"
+SKIP_REPO_FETCH=1 \
+INSTALL_DIR="$HOME/WorkSpace/utat-worker-archive" \
+bash "$HOME/WorkSpace/utat-worker-archive/scripts/install-worker.sh"
 ```
 
 如果仓库是 private，匿名 raw URL 会返回 404。需要二选一：
