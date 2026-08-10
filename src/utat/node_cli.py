@@ -90,6 +90,12 @@ def cmd_recover(args: argparse.Namespace) -> None:
     print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
+def cmd_cleanup(args: argparse.Namespace) -> None:
+    runner = _runner(args)
+    result = runner.cleanup_missing_issues(root_issue_id=args.root_issue_id or "")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="utat-node")
     p.add_argument("--config", default=None)
@@ -134,6 +140,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("recover")
     s.add_argument("--node-id", default="")
     s.set_defaults(func=cmd_recover)
+
+    s = sub.add_parser("cleanup")
+    s.add_argument("--node-id", default="")
+    s.add_argument("--root-issue-id", default="")
+    s.set_defaults(func=cmd_cleanup)
 
     return p
 

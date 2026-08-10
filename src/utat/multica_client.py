@@ -13,11 +13,12 @@ class MulticaError(RuntimeError):
 
 
 class MulticaClient:
-    def __init__(self, workspace_id: str, cli: str = "multica", server_url: str = "", profile: str = ""):
+    def __init__(self, workspace_id: str, cli: str = "multica", server_url: str = "", profile: str = "", token: str = ""):
         self.workspace_id = workspace_id
         self.cli = cli
         self.server_url = server_url
         self.profile = profile
+        self.token = token
 
     def _base(self) -> List[str]:
         cmd = [self.cli]
@@ -30,7 +31,14 @@ class MulticaClient:
         return cmd
 
     def run(self, args: List[str], *, input_text: str | None = None, timeout: int = 60, check: bool = True) -> subprocess.CompletedProcess:
-        p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        env = os.environ.copy()
+        if self.workspace_id:
+            env["MULTICA_WORKSPACE_ID"] = self.workspace_id
+        if self.server_url:
+            env["MULTICA_SERVER_URL"] = self.server_url
+        if self.token:
+            env["MULTICA_TOKEN"] = self.token
+        p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env)
         if check and p.returncode != 0:
             raise MulticaError(f"multica {' '.join(args)} failed rc={p.returncode}: {p.stderr.strip()}")
         return p
@@ -43,6 +51,11 @@ class MulticaClient:
 
     def issue_get(self, issue_id: str) -> Dict[str, Any]:
         return self.json(["issue", "get", issue_id])
+
+    @staticmethod
+    def is_not_found_error(exc: Exception) -> bool:
+        text = str(exc)
+        return "rc=4" in text or "未找到请求的资源" in text or "not found" in text.lower()
 
     def issue_children(self, issue_id: str) -> Dict[str, Any]:
         return self.json(["issue", "children", issue_id])

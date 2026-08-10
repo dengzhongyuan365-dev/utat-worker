@@ -21,7 +21,7 @@ def load_payload_file(path: str | Path) -> Dict[str, Any]:
 
 def normalize_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     """Normalize the structured task contract while retaining legacy flat fields."""
-    data = dict(payload)
+    data = _strip_placeholders(dict(payload))
     issue = _mapping(data.get("issue"))
     task = _mapping(data.get("task"))
     source = _mapping(data.get("source"))
@@ -37,6 +37,7 @@ def normalize_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
 
     out = dict(data)
     out["schema"] = pick(data.get("schema"), SCHEMA, default=SCHEMA)
+    out["workspace_id"] = pick(data.get("workspace_id"), issue.get("workspace_id"), task.get("workspace_id"), source.get("workspace_id"), callback.get("workspace_id"))
     out["issue_id"] = pick(data.get("issue_id"), issue.get("id"))
     out["root_issue_id"] = pick(data.get("root_issue_id"), issue.get("root_id"), issue.get("root_issue_id"))
     out["app_issue_id"] = pick(data.get("app_issue_id"), issue.get("app_id"), issue.get("app_issue_id"))
@@ -119,6 +120,18 @@ def resolve_environment(payload: Mapping[str, Any]) -> Dict[str, str]:
         names = ", ".join(sorted(set(unresolved)))
         raise ValueError(f"环境变量未解析，禁止启动测试：{names}")
     return resolved
+
+_PLACEHOLDER_VALUES = {"可选", "默认", "无", "待填写", "UT脚本可选", "AT路径可选", "不需要", "无需", "none", "null", "N/A", "n/a"}
+
+
+def _strip_placeholders(value: Any) -> Any:
+    if isinstance(value, str):
+        return "" if value.strip() in _PLACEHOLDER_VALUES else value
+    if isinstance(value, Mapping):
+        return {k: _strip_placeholders(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_placeholders(v) for v in value]
+    return value
 
 
 def _mapping(value: Any) -> Dict[str, Any]:

@@ -9,7 +9,7 @@ from uuid import uuid4
 from .timeutil import now_iso
 
 
-TERMINAL_STATES = {"result_ready", "finalized", "failed", "blocked", "interrupted"}
+TERMINAL_STATES = {"result_ready", "finalized", "failed", "blocked", "interrupted", "orphaned"}
 ACTIVE_STATES = {"starting", "running"}
 
 
@@ -35,6 +35,7 @@ class NodeQueue:
             CREATE TABLE IF NOT EXISTS node_tasks (
               id TEXT PRIMARY KEY,
               issue_id TEXT NOT NULL UNIQUE,
+              workspace_id TEXT,
               root_issue_id TEXT,
               app_issue_id TEXT,
               task_type TEXT NOT NULL,
@@ -61,6 +62,12 @@ class NodeQueue:
             CREATE INDEX IF NOT EXISTS idx_node_tasks_node ON node_tasks(node_id, state);
             """
         )
+        self._ensure_column("workspace_id", "TEXT")
+
+    def _ensure_column(self, name: str, definition: str) -> None:
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(node_tasks)").fetchall()}
+        if name not in cols:
+            self.conn.execute(f"ALTER TABLE node_tasks ADD COLUMN {name} {definition}")
 
     def close(self) -> None:
         self.conn.close()
@@ -103,13 +110,14 @@ class NodeQueue:
         with self.conn:
             self.conn.execute(
                 """INSERT INTO node_tasks(
-                    id, issue_id, root_issue_id, app_issue_id, task_type,
+                    id, issue_id, workspace_id, root_issue_id, app_issue_id, task_type,
                     app_name, node_id, payload_json, state, phase, submitted_at,
                     updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     task_id,
                     issue_id,
+                    payload.get("workspace_id", ""),
                     payload.get("root_issue_id", ""),
                     payload.get("app_issue_id", ""),
                     payload.get("task_type", ""),
@@ -209,6 +217,14 @@ class NodeQueue:
         values = list(fields.values()) + [task_id]
         with self.conn:
             self.conn.execute(f"UPDATE node_tasks SET {sets} WHERE id=?", values)
+
+    def delete(self, task_id: str) -> bool:
+        with self.conn:
+            cur = self.conn.execute("DELETE FROM node_tasks WHERE id=? OR issue_id=?", (task_id, task_id))
+            return cur.rowcount > 0
+
+    def mark_orphaned(self, task_id: str, error: str = "issue-not-found") -> None:
+        self.update(task_id, state="orphaned", phase="orphaned", error=error, finished_at=now_iso(), heartbeat_at=now_iso())
 
     def recover(self, *, node_id: str = "", stale_before: str = "") -> List[Dict[str, Any]]:
         """Return active tasks for inspection without killing processes.

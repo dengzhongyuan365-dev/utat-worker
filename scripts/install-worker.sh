@@ -56,5 +56,24 @@ if [ ! -f "$CONFIG_DIR/config.json" ]; then
 JSON
 fi
 
+# Optional fixed Multica callback credentials for private execution nodes.
+# Do not print token. The worker loads this file before every callback.
+MULTICA_ENV_FILE="$CONFIG_DIR/multica.env"
+CALLBACK_TOKEN="${UTAT_MULTICA_TOKEN:-${MULTICA_TOKEN:-}}"
+CALLBACK_WORKSPACE="${MULTICA_WORKSPACE_ID:-${UTAT_WORKSPACE_ID:-}}"
+CALLBACK_SERVER="${MULTICA_SERVER_URL:-${UTAT_MULTICA_SERVER_URL:-https://agentapi-dev.uniontech.com}}"
+CALLBACK_NODE="${UTAT_NODE_ID:-}"
+if [ -n "$CALLBACK_TOKEN" ] || [ -n "$CALLBACK_WORKSPACE" ] || [ -n "$CALLBACK_NODE" ]; then
+  umask 077
+  {
+    [ -n "$CALLBACK_SERVER" ] && printf 'MULTICA_SERVER_URL=%s\n' "$CALLBACK_SERVER"
+    [ -n "$CALLBACK_WORKSPACE" ] && printf 'MULTICA_WORKSPACE_ID=%s\n' "$CALLBACK_WORKSPACE"
+    [ -n "$CALLBACK_TOKEN" ] && printf 'MULTICA_TOKEN=%s\n' "$CALLBACK_TOKEN"
+    [ -n "$CALLBACK_NODE" ] && printf 'UTAT_NODE_ID=%s\n' "$CALLBACK_NODE"
+  } > "$MULTICA_ENV_FILE"
+  chmod 600 "$MULTICA_ENV_FILE"
+  echo "Callback env: $MULTICA_ENV_FILE"
+fi
+
 echo "Installed to $INSTALL_DIR"
 echo "Config: $CONFIG_DIR/config.json"

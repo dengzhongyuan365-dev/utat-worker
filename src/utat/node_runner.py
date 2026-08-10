@@ -41,11 +41,13 @@ class NodeRunner:
             cli=mc_cfg.get("cli", "multica"),
             server_url=mc_cfg.get("server_url", ""),
             profile=mc_cfg.get("profile", ""),
+            token=mc_cfg.get("token", ""),
         )
 
     def submit(self, payload: Dict[str, Any], *, auto_start: bool = True) -> Dict[str, Any]:
         payload = normalize_payload(payload)
         payload["node_id"] = payload.get("node_id") or self.node_id
+        payload["workspace_id"] = payload.get("workspace_id") or self.config.get("workspace_id", "")
         validate_payload(payload)
         task = self.queue.submit(payload)
         task["queue_position"] = self.queue.queue_position(task["id"])
@@ -150,16 +152,89 @@ class NodeRunner:
 
     def publish_result_ready(self, task: Dict[str, Any], result: Dict[str, Any], result_path: Path, artifact_dir: Path) -> None:
         issue_id = task["issue_id"]
+        workspace_id = self._task_workspace_id(task)
+        multica = self._multica_for_workspace(workspace_id)
+        callback_error = self.home / "tasks" / task["id"] / "multica-callback-error.txt"
         try:
-            self.multica.metadata_set(issue_id, "utat.task_state", "result_ready", value_type="string")
-            self.multica.metadata_set(issue_id, "utat.result_json", json.dumps(result, ensure_ascii=False), value_type="string")
-            self.multica.metadata_set(issue_id, "utat.artifact_dir", str(artifact_dir), value_type="string")
-            self.multica.metadata_set(issue_id, "utat.result_path", str(result_path), value_type="string")
-            self.multica.metadata_set(issue_id, "utat.node", self.node_id, value_type="string")
-            self.multica.issue_rerun(issue_id)
+            # If the user has deleted the issue, remove it from the local active DB.
+            # Keep task files on disk as tombstone/audit, but do not block later tasks.
+            multica.issue_get(issue_id)
+            multica.metadata_set(issue_id, "utat.task_state", "result_ready", value_type="string")
+            multica.metadata_set(issue_id, "utat.result_json", json.dumps(result, ensure_ascii=False), value_type="string")
+            multica.metadata_set(issue_id, "utat.artifact_dir", str(artifact_dir), value_type="string")
+            multica.metadata_set(issue_id, "utat.result_path", str(result_path), value_type="string")
+            multica.metadata_set(issue_id, "utat.node", self.node_id, value_type="string")
+            if workspace_id:
+                multica.metadata_set(issue_id, "utat.workspace_id", workspace_id, value_type="string")
+            multica.issue_rerun(issue_id)
+            callback_error.unlink(missing_ok=True)
         except Exception as exc:
-            callback_error = self.home / "tasks" / task["id"] / "multica-callback-error.txt"
+            if MulticaClient.is_not_found_error(exc):
+                tombstone = {
+                    "task_id": task.get("id"),
+                    "issue_id": issue_id,
+                    "workspace_id": workspace_id,
+                    "state": "orphaned",
+                    "reason": "issue-not-found-or-deleted",
+                    "error": str(exc),
+                    "result_path": str(result_path),
+                    "artifact_dir": str(artifact_dir),
+                    "updated_at": now_iso(),
+                }
+                (self.home / "tasks" / task["id"] / "orphaned-issue-deleted.json").write_text(json.dumps(tombstone, ensure_ascii=False, indent=2), encoding="utf-8")
+                self.queue.mark_orphaned(task["id"], "issue-not-found-or-deleted")
+                self.queue.delete(task["id"])
+                callback_error.unlink(missing_ok=True)
+                return
             callback_error.write_text(str(exc), encoding="utf-8")
+
+    def _task_workspace_id(self, task: Dict[str, Any]) -> str:
+        try:
+            payload = json.loads(task.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        return str(task.get("workspace_id") or payload.get("workspace_id") or self.config.get("workspace_id") or "")
+
+    def _multica_for_workspace(self, workspace_id: str) -> MulticaClient:
+        mc_cfg = self.config.get("multica") or {}
+        return MulticaClient(
+            workspace_id or self.config.get("workspace_id", ""),
+            cli=mc_cfg.get("cli", "multica"),
+            server_url=mc_cfg.get("server_url", ""),
+            profile=mc_cfg.get("profile", ""),
+            token=mc_cfg.get("token", ""),
+        )
+
+    def cleanup_missing_issues(self, *, root_issue_id: str = "") -> Dict[str, Any]:
+        deleted = []
+        kept = []
+        errors = []
+        for task in self.queue.list():
+            if root_issue_id and task.get("root_issue_id") != root_issue_id:
+                continue
+            workspace_id = self._task_workspace_id(task)
+            multica = self._multica_for_workspace(workspace_id)
+            try:
+                multica.issue_get(task["issue_id"])
+                kept.append(task["id"])
+            except Exception as exc:
+                if MulticaClient.is_not_found_error(exc):
+                    task_dir = self.tasks_dir / task["id"]
+                    task_dir.mkdir(parents=True, exist_ok=True)
+                    (task_dir / "orphaned-issue-deleted.json").write_text(json.dumps({
+                        "task_id": task.get("id"),
+                        "issue_id": task.get("issue_id"),
+                        "workspace_id": workspace_id,
+                        "state": "orphaned",
+                        "reason": "issue-not-found-or-deleted",
+                        "error": str(exc),
+                        "updated_at": now_iso(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self.queue.delete(task["id"])
+                    deleted.append(task["id"])
+                else:
+                    errors.append({"task_id": task.get("id"), "issue_id": task.get("issue_id"), "error": str(exc)})
+        return {"deleted": deleted, "kept": kept, "errors": errors}
 
     def _write_local_state(self, task_dir: Path, task_id: str, state: str, data: Dict[str, Any]) -> None:
         payload = {"task_id": task_id, "node_id": self.node_id, "state": state, "updated_at": now_iso()}

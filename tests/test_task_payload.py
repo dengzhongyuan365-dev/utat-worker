@@ -48,3 +48,21 @@ def test_submit_from_payload_file_without_cli_flags(tmp_path, monkeypatch, capsy
     output = json.loads(capsys.readouterr().out)
     assert output["issue_id"] == "at-1"
     assert output["state"] == "queued"
+
+
+def test_payload_workspace_and_placeholder_cleanup():
+    payload = normalize_payload(
+        {
+            "issue": {"id": "at-2", "root_id": "root-2", "app_id": "app-2", "workspace_id": "ws-1"},
+            "task": {"type": "AT", "app_name": "app", "node_id": "local"},
+            "test": {"suite": "可选", "at_path": "可选", "script": "UT脚本可选"},
+            "build": {"build_command": "可选", "install_command": "待填写"},
+        }
+    )
+    validate_payload(payload)
+    assert payload["workspace_id"] == "ws-1"
+    assert payload["suite"] == ""
+    assert payload["at_path"] == ""
+    assert payload["test_script"] == ""
+    assert payload["build_command"] == ""
+    assert payload["install_command"] == ""
