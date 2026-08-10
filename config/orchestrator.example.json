@@ -4,10 +4,10 @@
   "multica": {"cli": "multica", "server_url": "", "profile": ""},
   "scheduler": {"global_parallel": 1, "poll_interval_sec": 30},
   "routing": {
-    "deepin-mail": {"preferred_nodes": ["node-local-70"]},
-    "dde-file-manager": {"preferred_nodes": ["node-local-70"]},
-    "deepin-editor": {"preferred_nodes": ["node-public-test"]},
-    "deepin-reader": {"preferred_nodes": ["node-public-test"]}
+    "deepin-mail": {"preferred_nodes": ["node-a"]},
+    "dde-file-manager": {"preferred_nodes": ["node-a"]},
+    "deepin-editor": {"preferred_nodes": ["node-b"]},
+    "deepin-reader": {"preferred_nodes": ["node-b"]}
   },
   "mail": {"enabled": false}
 }

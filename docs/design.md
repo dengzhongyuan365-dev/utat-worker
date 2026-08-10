@@ -84,8 +84,8 @@ UT 智能体启动后台测试
 
 现有执行机器包括：
 
-- 本地 local 节点，例如 70 机器；
-- 公共测试节点，例如 public-test01；
+- 任意本地节点，例如用户自有测试机；
+- 任意公共测试节点，例如具备 worker 的公共机器；
 - build 节点；
 - 其他没有 SSH 权限的公共节点。
 
@@ -168,7 +168,7 @@ flowchart TB
 
     O -->|生成任务队列| DB
     DB -->|可领取任务| W1[local worker]
-    DB -->|可领取任务| W2[public-test worker]
+    DB -->|可领取任务| W2[node-b worker]
     DB -->|可领取任务| W3[build worker]
 
     W1 -->|本机执行 AT/UT| R1[测试进程/构建进程]
@@ -206,7 +206,7 @@ flowchart TB
 描述：
 - deepin-mail / repo / branch / full / local
 - dde-file-manager / repo / branch / full / local
-- deepin-editor / repo / branch / full / public-test
+- deepin-editor / repo / branch / full / node-b
 ```
 
 调度器读取总入口 issue，并根据描述生成内部 job。
@@ -297,7 +297,6 @@ sequenceDiagram
 │       └── log_parse.py
 ├── scripts/
 │   ├── install-worker.sh
-│   └── systemd-user/utat-worker.service  # 可选包装，不是主流程
 └── docs/
     └── design.md
 ```
@@ -519,13 +518,13 @@ stateDiagram-v2
 ```yaml
 routing:
   deepin-mail:
-    preferred_nodes: [local]
+    preferred_nodes: [node-a]
   dde-file-manager:
-    preferred_nodes: [local]
+    preferred_nodes: [node-a]
   deepin-editor:
-    preferred_nodes: [public-test01]
+    preferred_nodes: [node-b]
   deepin-reader:
-    preferred_nodes: [public-test01]
+    preferred_nodes: [node-b]
 ```
 
 规则：
@@ -681,7 +680,7 @@ youqu
 youqu doctor
 编译工具链
 Qt/DTK 基础依赖
-worker CLI 环境；systemd user service 仅作为可选包装
+worker CLI 环境
 ```
 
 结果保存：
@@ -716,7 +715,6 @@ sudo apt build-dep .
 写配置
 检查 multica/youqu/python3
 输出节点注册结果
-可选：如果用户明确需要常驻拉任务，再启动 systemd --user 服务
 ```
 
 不允许 bootstrap skill 执行 AT/UT 长任务。
@@ -724,9 +722,9 @@ sudo apt build-dep .
 补充约束：
 
 ```text
-AT/UT 执行程序本体是普通 CLI，不强制注册为系统服务。
-systemd 只是一种可选运行方式，用于无人值守节点持续拉任务。
-如果只是一次任务或临时验证，直接运行 utat worker --once 或 utat worker 前台模式。
+AT/UT 执行程序本体是普通 CLI，不注册为系统服务。
+一次任务或临时验证，直接运行 utat worker --once。
+需要持续拉任务时，用前台 utat worker run 交给外部进程管理器或人工控制。
 ```
 
 ---
@@ -874,7 +872,7 @@ worker 主动领取适合自己的任务
 
 ```yaml
 nodes:
-  local:
+  node-a:
     max_parallel: 1
     work_root: /home/uos/tests
     apps:
@@ -884,7 +882,7 @@ nodes:
       - AT
       - UT
 
-  public-test01:
+  node-b:
     max_parallel: 1
     work_root: /home/uos/tests
     apps:
@@ -1203,7 +1201,7 @@ deepin-mail UT 这类长任务完成后能自动回写最终结果。
 
 实现：
 
-- local/public-test 节点注册；
+- 多个自定义 node_id 节点注册；
 - 节点能力路由；
 - 全局锁；
 - 节点心跳。
@@ -1288,10 +1286,10 @@ utat task cancel <task-id>
 ## 20. 后续需要确认的问题
 
 1. 中心调度器第一版部署在哪台机器？  
-   建议先部署在本机或 70 机器。
+   建议先部署在一台稳定可访问的管理机器。
 
 2. 第一批 worker 节点有哪些？  
-   建议先：`local`、`public-test01`。
+   建议先用两个示例节点：`node-a`、`node-b`，真实机器名由部署时配置。
 
 3. Multica token/CLI 授权如何在 worker 节点配置？  
    需要统一 bootstrap。

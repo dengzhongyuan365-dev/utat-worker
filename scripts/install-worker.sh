@@ -6,8 +6,14 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/WorkSpace/utat-worker}"
 CONFIG_DIR="${CONFIG_DIR:-$HOME/.utat-worker}"
 
 mkdir -p "$CONFIG_DIR"
+CLONE_URL="$REPO_URL"
+if [ -n "${GITHUB_TOKEN:-}" ] && [[ "$REPO_URL" == https://github.com/* ]]; then
+  # Private repository support. Do not print CLONE_URL because it contains token.
+  CLONE_URL="${REPO_URL/https:\\/\\/github.com\\//https:\\/\\/x-access-token:${GITHUB_TOKEN}@github.com\\/}"
+fi
+
 if [ ! -d "$INSTALL_DIR/.git" ]; then
-  git clone "$REPO_URL" "$INSTALL_DIR"
+  git clone "$CLONE_URL" "$INSTALL_DIR"
 else
   git -C "$INSTALL_DIR" pull --ff-only
 fi
