@@ -30,13 +30,15 @@ class Worker:
             profile=(config.get("multica") or {}).get("profile", ""),
         )
         self.work_root = Path(expand_path(self.node.get("work_root") or "~/tests")).expanduser()
-        self.max_parallel = int(self.node.get("max_parallel") or 1)
+        # AT/UT are desktop/application tests.  Keep one active task per
+        # physical node regardless of a stale or overly broad config value.
+        self.max_parallel = 1
         self.capabilities = self.node.get("capabilities") or {"apps": [], "task_types": ["AT", "UT"]}
         self.poll_interval = int(self.node.get("poll_interval_sec") or 15)
 
     def once(self) -> bool:
-        self.server.post("/api/v1/nodes/heartbeat", {"node_id": self.node_id, "hostname": socket.gethostname(), "capabilities": self.capabilities, "max_parallel": self.max_parallel})
-        claim = self.server.post("/api/v1/tasks/claim", {"node_id": self.node_id, "capabilities": {**self.capabilities, "hostname": socket.gethostname(), "max_parallel": self.max_parallel}})
+        self.server.post("/api/v1/nodes/heartbeat", {"node_id": self.node_id, "hostname": socket.gethostname(), "capabilities": self.capabilities, "max_parallel": 1})
+        claim = self.server.post("/api/v1/tasks/claim", {"node_id": self.node_id, "capabilities": {**self.capabilities, "hostname": socket.gethostname(), "max_parallel": 1}})
         task = claim.get("task")
         if not task:
             return False

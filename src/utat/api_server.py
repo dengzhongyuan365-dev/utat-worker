@@ -58,7 +58,7 @@ class APIServer:
                 try:
                     body = self._read_json()
                     if path == "/api/v1/nodes/heartbeat":
-                        outer.db.heartbeat_node(body["node_id"], hostname=body.get("hostname", ""), capabilities=body.get("capabilities") or {}, max_parallel=int(body.get("max_parallel", 1)))
+                        outer.db.heartbeat_node(body["node_id"], hostname=body.get("hostname", ""), capabilities=body.get("capabilities") or {}, max_parallel=1)
                         return self._send(200, {"ok": True})
                     if path == "/api/v1/tasks/claim":
                         task = outer.db.claim_task(body["node_id"], body.get("capabilities") or {})

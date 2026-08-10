@@ -174,40 +174,73 @@ class QueueDB:
             (node_id, hostname, caps, max_parallel, ts),
         )
 
-    def make_next_dispatchable(self) -> Optional[Dict[str, Any]]:
-        """First-phase scheduler: globally dispatch at most one waiting task, preserving AT before UT per app."""
-        active = self.conn.execute("SELECT COUNT(*) c FROM exec_tasks WHERE status IN ('dispatchable','claimed','running','collecting')").fetchone()["c"]
-        if active:
-            return None
-        # Order by root creation, app order, AT before UT.
-        row = self.conn.execute(
-            """
+    def make_dispatchable_tasks(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Expose every task that is ready for a *different node* to claim.
+
+        Concurrency is deliberately not global.  A worker enforces one active
+        AT/UT task per ``node_id`` when it claims a task.  This method only
+        enforces workflow dependencies:
+
+        * an application's UT waits for its own AT to become terminal;
+        * applications and root issues are independent and may run on
+          different nodes at the same time.
+        """
+        sql = """
             SELECT e.* FROM exec_tasks e
             JOIN app_tasks a ON a.id=e.app_task_id
             JOIN root_jobs r ON r.root_issue_id=e.root_issue_id
             WHERE e.status IN ('waiting','queued')
               AND (
-                e.task_type='AT'
-                OR NOT EXISTS (
-                  SELECT 1 FROM exec_tasks p WHERE p.app_task_id=e.app_task_id AND p.task_type='AT' AND p.status NOT IN ('done','failed','interrupted','cancelled')
+                (
+                  e.task_type='AT'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM exec_tasks active
+                    WHERE active.app_task_id=e.app_task_id
+                      AND active.status IN ('dispatchable','claimed','running','collecting')
+                  )
+                )
+                OR
+                (
+                  e.task_type='UT'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM exec_tasks at_task
+                    WHERE at_task.app_task_id=e.app_task_id
+                      AND at_task.task_type='AT'
+                      AND at_task.status NOT IN ('done','failed','interrupted','cancelled')
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM exec_tasks active
+                    WHERE active.app_task_id=e.app_task_id
+                      AND active.status IN ('dispatchable','claimed','running','collecting')
+                  )
                 )
               )
-              AND NOT EXISTS (
-                SELECT 1 FROM app_tasks prev
-                WHERE prev.root_job_id=a.root_job_id AND prev.sort_order<a.sort_order AND prev.status NOT IN ('done','failed','skipped')
-              )
             ORDER BY r.created_at, a.sort_order, CASE e.task_type WHEN 'AT' THEN 0 ELSE 1 END
-            LIMIT 1
-            """
-        ).fetchone()
-        if not row:
-            return None
+        """
+        params: List[Any] = []
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = self.conn.execute(sql, params).fetchall()
+        if not rows:
+            return []
         ts = now_iso()
-        self.conn.execute("UPDATE exec_tasks SET status='dispatchable', phase='dispatchable', updated_at=? WHERE id=?", (ts, row["id"]))
-        return self.get_exec(row["id"])
+        with self.conn:
+            self.conn.executemany(
+                "UPDATE exec_tasks SET status='dispatchable', phase='dispatchable', updated_at=? WHERE id=? AND status IN ('waiting','queued')",
+                [(ts, row["id"]) for row in rows],
+            )
+        return [self.get_exec(row["id"]) for row in rows]
+
+    def make_next_dispatchable(self) -> Optional[Dict[str, Any]]:
+        """Backward-compatible single-item wrapper around ``make_dispatchable_tasks``."""
+        tasks = self.make_dispatchable_tasks(limit=1)
+        return tasks[0] if tasks else None
 
     def claim_task(self, node_id: str, capabilities: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        self.heartbeat_node(node_id, hostname=capabilities.get("hostname", ""), capabilities=capabilities, max_parallel=int(capabilities.get("max_parallel", 1)))
+        # AT/UT execution is always serialized per physical node.  A caller
+        # cannot raise this limit through a config value or heartbeat payload.
+        self.heartbeat_node(node_id, hostname=capabilities.get("hostname", ""), capabilities=capabilities, max_parallel=1)
         apps = set(capabilities.get("apps") or [])
         types = set(capabilities.get("task_types") or ["AT", "UT"])
         rows = self.conn.execute("SELECT * FROM exec_tasks WHERE status='dispatchable' ORDER BY updated_at").fetchall()
@@ -221,13 +254,38 @@ class QueueDB:
             if task["task_type"] not in types:
                 continue
             ts = now_iso()
-            with self.conn:
+            # The capacity check and the state transition must be one SQLite
+            # transaction.  Otherwise two local worker processes using the
+            # same node_id could both observe an idle node and run in parallel.
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                running = self.conn.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM exec_tasks
+                    WHERE claimed_by=?
+                      AND status IN ('claimed','running','collecting')
+                    """,
+                    (node_id,),
+                ).fetchone()["c"]
+                if running >= 1:
+                    self.conn.execute("ROLLBACK")
+                    return None
                 cur = self.conn.execute(
                     "UPDATE exec_tasks SET status='claimed', phase='claimed', claimed_by=?, started_at=COALESCE(started_at, ?), updated_at=? WHERE id=? AND status='dispatchable'",
                     (node_id, ts, ts, task["id"]),
                 )
                 if cur.rowcount == 1:
+                    self.conn.execute(
+                        "UPDATE nodes SET current_running=1, status='busy', last_heartbeat=? WHERE node_id=?",
+                        (ts, node_id),
+                    )
+                    self.conn.execute("COMMIT")
                     return self.get_exec(task["id"])
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                if self.conn.in_transaction:
+                    self.conn.execute("ROLLBACK")
+                raise
         return None
 
     def update_task(self, task_id: str, **fields: Any) -> None:
@@ -240,10 +298,29 @@ class QueueDB:
 
     def complete_task(self, task_id: str, status: str, result: Dict[str, Any]) -> None:
         ts = now_iso()
-        self.conn.execute(
-            "UPDATE exec_tasks SET status=?, phase=?, result_json=?, finished_at=?, updated_at=? WHERE id=?",
-            (status, status, json.dumps(result, ensure_ascii=False), ts, ts, task_id),
-        )
+        with self.conn:
+            row = self.conn.execute("SELECT claimed_by FROM exec_tasks WHERE id=?", (task_id,)).fetchone()
+            self.conn.execute(
+                "UPDATE exec_tasks SET status=?, phase=?, result_json=?, finished_at=?, updated_at=? WHERE id=?",
+                (status, status, json.dumps(result, ensure_ascii=False), ts, ts, task_id),
+            )
+            if row and row["claimed_by"]:
+                self.conn.execute(
+                    """
+                    UPDATE nodes
+                    SET current_running=(
+                        SELECT COUNT(*) FROM exec_tasks
+                        WHERE claimed_by=? AND status IN ('claimed','running','collecting')
+                    ),
+                    status=CASE WHEN (
+                        SELECT COUNT(*) FROM exec_tasks
+                        WHERE claimed_by=? AND status IN ('claimed','running','collecting')
+                    ) = 0 THEN 'online' ELSE 'busy' END,
+                    last_heartbeat=?
+                    WHERE node_id=?
+                    """,
+                    (row["claimed_by"], row["claimed_by"], ts, row["claimed_by"]),
+                )
 
     def refresh_app_statuses(self) -> None:
         rows = self.conn.execute("SELECT id FROM app_tasks").fetchall()

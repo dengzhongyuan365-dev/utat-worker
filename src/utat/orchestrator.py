@@ -4,7 +4,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .issue_parser import AppSpec, extract_timestamp_from_root_title, flatten_children, parse_root_description, child_by_title
 from .multica_client import MulticaClient, MulticaError
@@ -64,15 +64,15 @@ class Orchestrator:
                 plan.append({"app": spec.app_name, "type": typ, "title": exec_title, "issue_id": issue_id, "preferred_nodes": preferred})
         return {"root_issue_id": root_issue_id, "title": title, "timestamp": timestamp, "apps": [s.__dict__ for s in specs], "created": created, "plan": plan}
 
-    def schedule_once(self) -> Optional[Dict[str, Any]]:
+    def schedule_once(self) -> List[Dict[str, Any]]:
         self.db.refresh_app_statuses()
-        return self.db.make_next_dispatchable()
+        return self.db.make_dispatchable_tasks()
 
     def run_loop(self, interval: int = 30) -> None:
         print(f"orchestrator loop started interval={interval}s")
         while True:
-            task = self.schedule_once()
-            if task:
+            tasks = self.schedule_once()
+            for task in tasks:
                 print(f"dispatchable: {task['task_type']} {task['app_name']} issue={task['issue_id']}")
             time.sleep(interval)
 

@@ -4,7 +4,7 @@
 
 ## 组件
 
-- `utat server`：中心 API 服务（领取任务、心跳、完成回写）
+- `utat server`：旧版中心 API 原型（当前不作为多机器部署前提）
 - `utat orchestrator`：扫描 Multica issue，写入本地队列，推进任务
 - `utat worker`：节点任务执行器，默认前台轮询；也可 `--once` 单次执行
 - `scripts/install-worker.sh`：一键安装脚本
@@ -70,7 +70,7 @@ bash -c "$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" https://raw.git
 
 ## 中心调度器部署位置
 
-中心调度器不是 Multica Agent，也不应该默认放在个人电脑上。它需要部署在一台稳定、长期在线、所有 worker 都能访问的公共控制节点或内网服务上。
+中心调度器不是 Multica Agent，也不应该默认放在个人电脑上。最终形态应部署在一台稳定、长期在线、能够访问 Multica 的公共控制节点或内网运行环境上。
 
 中心节点需要运行：
 
@@ -81,17 +81,17 @@ utat orchestrator run
 
 70、test 等机器只运行 worker，不运行中心调度器。当前代码不会假设具体机器名；中心节点和 worker 节点由部署配置决定。
 
-如果暂时没有满足网络条件的公共控制节点，不能直接声称多机器调度已经部署完成；需要先提供一个所有 worker 可访问的中心地址，或把 API 部署到现有内网服务中。
+如果暂时没有满足条件的公共控制节点，不能直接声称多机器调度已经部署完成；需要先明确调度器运行位置。后续 Multica-only 模式下，worker 主动轮询 Multica，不要求公共机器开放入站端口。
 
 ## 多机器调度方式
 
-中心调度器不 SSH 到执行机器。流程是：
+中心调度器不 SSH 到执行机器。当前 HTTP 原型流程是：
 
 ```text
 中心调度器写任务到 queue.db
 → 任务进入 dispatchable
 → 各机器本地 worker 主动请求 /api/v1/tasks/claim
-→ 调度器根据 worker 的 node_id/capabilities 和任务 preferred_nodes 判断是否允许领取
+→ 队列根据 worker 的 node_id/capabilities 和任务 preferred_nodes 判断是否允许领取
 → 领取成功的 worker 本机执行 AT/UT
 → worker 上传结果到 Multica，并回写中心调度器
 ```
@@ -141,7 +141,25 @@ utat orchestrator run
 }
 ```
 
-如果一个任务没有配置 `preferred_nodes`，则任意具备该应用和任务类型能力的 worker 都可以领取。第一版默认全局并发为 1，所以不会多台机器同时跑多个 AT/UT。
+如果一个任务没有配置 `preferred_nodes`，则任意具备该应用和任务类型能力的 worker 都可以领取。
+
+当前并发约束不是“全局只能跑一个”：
+
+- 每个 `node_id` 同时最多运行一个 AT/UT；
+- 不同 `node_id` 可以同时各运行一个 AT/UT；
+- 同一应用的 UT 必须等待该应用 AT 结束后才能进入可执行状态；
+- 不同应用之间不互相阻塞，因此可以被分配到不同机器并行；
+- 同一个节点即使启动多个 worker 进程，队列的原子领取也会拒绝第二个任务。
+
+例如：
+
+```text
+local：deepin-mail AT（运行中）
+node-70：dde-file-manager AT（运行中）
+node-build：deepin-editor UT（运行中）
+```
+
+以上是允许的；但 `local` 上不会同时出现第二个 AT/UT。
 
 ## 当前 MVP 能力
 
@@ -151,4 +169,6 @@ utat orchestrator run
 - 节点/应用路由控制
 - UT 进程托管与日志采集
 - 基础结果文件输出
-- 全局单任务调度
+- 每节点单任务调度
+- 多节点并发调度
+- 同一应用 AT→UT 顺序约束

@@ -13,7 +13,7 @@ DEFAULTS: Dict[str, Any] = {
     "workspace_id": "",
     "server": {"host": "127.0.0.1", "port": 8765, "token_env": "UTAT_SERVER_TOKEN"},
     "multica": {"cli": "multica", "server_url": "", "profile": ""},
-    "scheduler": {"global_parallel": 1, "poll_interval_sec": 30},
+    "scheduler": {"poll_interval_sec": 30},
     "worker": {
         "node_id": "local",
         "server_url": "http://127.0.0.1:8765",
