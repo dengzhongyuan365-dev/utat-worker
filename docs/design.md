@@ -297,7 +297,7 @@ sequenceDiagram
 │       └── log_parse.py
 ├── scripts/
 │   ├── install-worker.sh
-│   └── systemd-user/utat-worker.service
+│   └── systemd-user/utat-worker.service  # 可选包装，不是主流程
 └── docs/
     └── design.md
 ```
@@ -681,7 +681,7 @@ youqu
 youqu doctor
 编译工具链
 Qt/DTK 基础依赖
-worker systemd user service
+worker CLI 环境；systemd user service 仅作为可选包装
 ```
 
 结果保存：
@@ -715,11 +715,19 @@ sudo apt build-dep .
 下载 worker
 写配置
 检查 multica/youqu/python3
-启动 systemd --user 服务
 输出节点注册结果
+可选：如果用户明确需要常驻拉任务，再启动 systemd --user 服务
 ```
 
 不允许 bootstrap skill 执行 AT/UT 长任务。
+
+补充约束：
+
+```text
+AT/UT 执行程序本体是普通 CLI，不强制注册为系统服务。
+systemd 只是一种可选运行方式，用于无人值守节点持续拉任务。
+如果只是一次任务或临时验证，直接运行 utat worker --once 或 utat worker 前台模式。
+```
 
 ---
 
@@ -1296,4 +1304,3 @@ utat task cancel <task-id>
 
 6. 是否允许 AT 失败后继续 UT？  
    当前建议继续 UT，保证完整报告。
-
