@@ -1,0 +1,13 @@
+{
+  "workspace_id": "b982c611-c032-4874-ac62-0f66ae001f2f",
+  "server": {"host": "0.0.0.0", "port": 8765, "token_env": "UTAT_SERVER_TOKEN"},
+  "multica": {"cli": "multica", "server_url": "", "profile": ""},
+  "scheduler": {"global_parallel": 1, "poll_interval_sec": 30},
+  "routing": {
+    "deepin-mail": {"preferred_nodes": ["local"]},
+    "dde-file-manager": {"preferred_nodes": ["local"]},
+    "deepin-editor": {"preferred_nodes": ["public-test01"]},
+    "deepin-reader": {"preferred_nodes": ["public-test01"]}
+  },
+  "mail": {"enabled": false}
+}

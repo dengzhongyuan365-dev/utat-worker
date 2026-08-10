@@ -1,0 +1,16 @@
+{
+  "workspace_id": "b982c611-c032-4874-ac62-0f66ae001f2f",
+  "server": {"host": "127.0.0.1", "port": 8765, "token_env": "UTAT_SERVER_TOKEN"},
+  "multica": {"cli": "multica", "server_url": "", "profile": ""},
+  "worker": {
+    "node_id": "local",
+    "server_url": "http://127.0.0.1:8765",
+    "work_root": "~/tests",
+    "max_parallel": 1,
+    "poll_interval_sec": 15,
+    "capabilities": {
+      "apps": ["deepin-mail", "dde-file-manager"],
+      "task_types": ["AT", "UT"]
+    }
+  }
+}
