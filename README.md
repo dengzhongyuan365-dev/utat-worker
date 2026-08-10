@@ -41,6 +41,19 @@ utat worker run
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/install-worker.sh)"
 ```
 
+如果目标机器访问 `raw.githubusercontent.com` 出现 GnuTLS/TLS 错误，可以改用 GitHub codeload（不经过 raw 域名）：
+
+```bash
+tmp="$(mktemp -d)"
+curl --http1.1 --retry 5 --retry-all-errors -fL \
+  https://codeload.github.com/dengzhongyuan365-dev/utat-worker/tar.gz/refs/heads/master \
+  -o "$tmp/utat-worker.tar.gz"
+tar -xzf "$tmp/utat-worker.tar.gz" -C "$tmp"
+REPO_URL="https://github.com/dengzhongyuan365-dev/utat-worker.git" \
+INSTALL_DIR="$HOME/WorkSpace/utat-worker" \
+bash "$tmp/utat-worker-master/scripts/install-worker.sh"
+```
+
 如果仓库是 private，匿名 raw URL 会返回 404。需要二选一：
 
 1. 将仓库改为 public；
@@ -52,6 +65,21 @@ bash -c "$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" https://raw.git
 ```
 
 安装脚本内部默认用 `git clone https://github.com/dengzhongyuan365-dev/utat-worker.git`。private 仓库场景下，目标机器也需要具备 GitHub 认证能力。
+
+## 中心调度器部署位置
+
+中心调度器不是 Multica Agent，也不应该默认放在个人电脑上。它需要部署在一台稳定、长期在线、所有 worker 都能访问的公共控制节点或内网服务上。
+
+中心节点需要运行：
+
+```bash
+utat server
+utat orchestrator run
+```
+
+70、test 等机器只运行 worker，不运行中心调度器。当前代码不会假设具体机器名；中心节点和 worker 节点由部署配置决定。
+
+如果暂时没有满足网络条件的公共控制节点，不能直接声称多机器调度已经部署完成；需要先提供一个所有 worker 可访问的中心地址，或把 API 部署到现有内网服务中。
 
 ## 多机器调度方式
 
