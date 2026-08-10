@@ -44,7 +44,14 @@ if [ ! -f "$CONFIG_DIR/config.json" ]; then
     "capabilities": {"apps": [], "task_types": ["AT", "UT"]}
   },
   "routing": {},
-  "mail": {"enabled": false}
+  "mail": {"enabled": false},
+  "node": {
+    "node_id": "local",
+    "home": "~/.utat-node",
+    "queue_db": "~/.utat-node/queue.db",
+    "work_root": "~/tests",
+    "poll_interval_sec": 5
+  }
 }
 JSON
 fi

@@ -6,32 +6,65 @@
 
 - `utat server`：旧版中心 API 原型（当前不作为多机器部署前提）
 - `utat orchestrator`：扫描 Multica issue，写入本地队列，推进任务
-- `utat worker`：节点任务执行器，默认前台轮询；也可 `--once` 单次执行
+- `utat worker`：旧版 HTTP 队列 worker（兼容保留）
+- `utat-node`：实验版本地异步执行器，负责入队、本机串行执行、结果回调
 - `scripts/install-worker.sh`：一键安装脚本
 
 ## 快速开始
 
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
-utat init --workspace-id <workspace-id>
-utat server
-```
-
-另开终端启动：
+实验节点安装仍使用一条命令：
 
 ```bash
-utat orchestrator run
-utat worker run
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/install-worker.sh)"
 ```
+
+初始化节点：
+
+```bash
+utat-node init --node-id local
+```
+
+提交任务（Agent 调用，命令快速返回）：
+
+```bash
+utat-node submit \
+  --issue-id <issue-id> \
+  --task-type AT \
+  --app-name deepin-mail \
+  --node local
+```
+
+查看本机队列：
+
+```bash
+utat-node status
+```
+
+`submit` 会自动启动本机后台 worker；也可以手动启动：
+
+```bash
+utat-node worker run --node-id local
+```
+
+旧版 `utat server/orchestrator/worker` 仅为兼容保留，不作为本实验流程的主路径。
 
 说明：
 
+实验版本地执行器使用同一个程序的两个模式：
+
+```bash
+utat-node submit --issue-id <id> --task-type AT --app-name <app> --node local
+utat-node worker run --node-id local
+utat-node status
+```
+
+`submit` 只写入本机队列并立即返回；`worker run` 在后台消费队列并执行真实 AT/UT。两者是同一代码包的不同命令和不同进程。
+
 - **AT/UT 本体不是 service**，就是普通 CLI 程序；
-- 如果你不想常驻进程，可以让外层调度器按任务调用 `utat worker --once`；
-- 多机器通过 `node_id`、`capabilities`、`routing` 配置区分，节点名称由部署时自定义，不在代码里写死；
-- 调度器只给允许的节点发任务，不依赖 SSH。
+- `submit` 可以自动启动后台 worker，不需要 Agent 前台等待；
+- 每台机器使用自己的 `node_id`、本地 SQLite 和文件锁；
+- 同一机器最多执行一个 AT/UT，不同机器可以并发；
+- 任务完成后写 Multica metadata 并 rerun 对应 AT/UT Agent。
 
 ## 安装方式
 
@@ -169,6 +202,7 @@ node-build：deepin-editor UT（运行中）
 - 节点/应用路由控制
 - UT 进程托管与日志采集
 - 基础结果文件输出
-- 每节点单任务调度
-- 多节点并发调度
+- 每节点单任务执行
+- 多节点并发执行
+- result_ready 后通过 issue rerun 唤醒对应 AT/UT Agent
 - 同一应用 AT→UT 顺序约束

@@ -7,6 +7,8 @@ from typing import Any, Dict
 
 DEFAULT_HOME = Path(os.environ.get("UTAT_HOME", str(Path.home() / ".utat-worker")))
 DEFAULT_DB = DEFAULT_HOME / "queue.db"
+DEFAULT_NODE_HOME = Path(os.environ.get("UTAT_NODE_HOME", str(Path.home() / ".utat-node")))
+DEFAULT_NODE_DB = DEFAULT_NODE_HOME / "queue.db"
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 
 DEFAULTS: Dict[str, Any] = {
@@ -24,6 +26,13 @@ DEFAULTS: Dict[str, Any] = {
     },
     "routing": {},
     "mail": {"enabled": False},
+    "node": {
+        "node_id": "local",
+        "home": str(DEFAULT_NODE_HOME),
+        "queue_db": str(DEFAULT_NODE_DB),
+        "work_root": "~/tests",
+        "poll_interval_sec": 5
+    },
 }
 
 

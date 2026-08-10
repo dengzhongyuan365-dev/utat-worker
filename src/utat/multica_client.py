@@ -81,6 +81,21 @@ class MulticaClient:
     def issue_status(self, issue_id: str, status: str) -> Any:
         return self.run(["issue", "status", issue_id, status, "--output", "json"], timeout=60, check=True).stdout
 
+    def metadata_set(self, issue_id: str, key: str, value: str, *, value_type: str = "string") -> Any:
+        args = ["issue", "metadata", "set", issue_id, "--key", key, "--value", value]
+        if value_type:
+            args += ["--type", value_type]
+        return self.json(args, timeout=60)
+
+    def metadata_get(self, issue_id: str, key: str) -> Any:
+        return self.json(["issue", "metadata", "get", issue_id, "--key", key], timeout=60)
+
+    def metadata_list(self, issue_id: str) -> Any:
+        return self.json(["issue", "metadata", "list", issue_id], timeout=60)
+
+    def issue_rerun(self, issue_id: str) -> Any:
+        return self.json(["issue", "rerun", issue_id], timeout=60)
+
     def comment_add(self, issue_id: str, content: str, attachments: Iterable[str] = ()) -> Dict[str, Any]:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
             f.write(content)
