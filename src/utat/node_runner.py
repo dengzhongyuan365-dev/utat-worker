@@ -156,8 +156,11 @@ class NodeRunner:
         multica = self._multica_for_workspace(workspace_id)
         callback_error = self.home / "tasks" / task["id"] / "multica-callback-error.txt"
         try:
-            # If the user has deleted the issue, remove it from the local active DB.
-            # Keep task files on disk as tombstone/audit, but do not block later tasks.
+            # If the user has deleted the root issue or the current execution issue,
+            # remove it from the local active DB. Keep task files on disk as tombstone/audit.
+            root_issue_id = task.get("root_issue_id") or ""
+            if root_issue_id:
+                multica.issue_get(root_issue_id)
             multica.issue_get(issue_id)
             multica.metadata_set(issue_id, "utat.task_state", "result_ready", value_type="string")
             multica.metadata_set(issue_id, "utat.result_json", json.dumps(result, ensure_ascii=False), value_type="string")
@@ -209,21 +212,50 @@ class NodeRunner:
         deleted = []
         kept = []
         errors = []
+        root_missing = False
+        root_error = ""
+        if root_issue_id:
+            multica = self._multica_for_workspace(self.config.get("workspace_id", ""))
+            try:
+                multica.issue_get(root_issue_id)
+            except Exception as exc:
+                if MulticaClient.is_not_found_error(exc):
+                    root_missing = True
+                    root_error = str(exc)
+                else:
+                    errors.append({"root_issue_id": root_issue_id, "error": str(exc)})
         for task in self.queue.list():
             if root_issue_id and task.get("root_issue_id") != root_issue_id:
                 continue
             workspace_id = self._task_workspace_id(task)
+            task_dir = self.tasks_dir / task["id"]
+            task_dir.mkdir(parents=True, exist_ok=True)
+            if root_missing:
+                (task_dir / "orphaned-root-issue-deleted.json").write_text(json.dumps({
+                    "task_id": task.get("id"),
+                    "issue_id": task.get("issue_id"),
+                    "root_issue_id": task.get("root_issue_id"),
+                    "workspace_id": workspace_id,
+                    "state": "orphaned",
+                    "reason": "root-issue-not-found-or-deleted",
+                    "error": root_error,
+                    "updated_at": now_iso(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                self.queue.delete(task["id"])
+                deleted.append(task["id"])
+                continue
             multica = self._multica_for_workspace(workspace_id)
             try:
+                if task.get("root_issue_id"):
+                    multica.issue_get(task["root_issue_id"])
                 multica.issue_get(task["issue_id"])
                 kept.append(task["id"])
             except Exception as exc:
                 if MulticaClient.is_not_found_error(exc):
-                    task_dir = self.tasks_dir / task["id"]
-                    task_dir.mkdir(parents=True, exist_ok=True)
                     (task_dir / "orphaned-issue-deleted.json").write_text(json.dumps({
                         "task_id": task.get("id"),
                         "issue_id": task.get("issue_id"),
+                        "root_issue_id": task.get("root_issue_id"),
                         "workspace_id": workspace_id,
                         "state": "orphaned",
                         "reason": "issue-not-found-or-deleted",
@@ -234,7 +266,7 @@ class NodeRunner:
                     deleted.append(task["id"])
                 else:
                     errors.append({"task_id": task.get("id"), "issue_id": task.get("issue_id"), "error": str(exc)})
-        return {"deleted": deleted, "kept": kept, "errors": errors}
+        return {"deleted": deleted, "kept": kept, "errors": errors, "root_missing": root_missing}
 
     def _write_local_state(self, task_dir: Path, task_id: str, state: str, data: Dict[str, Any]) -> None:
         payload = {"task_id": task_id, "node_id": self.node_id, "state": state, "updated_at": now_iso()}
