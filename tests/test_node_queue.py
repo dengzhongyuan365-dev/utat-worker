@@ -34,3 +34,34 @@ def test_submit_is_idempotent_for_same_issue():
         two = q.submit({"issue_id": "same", "task_type": "UT", "app_name": "app", "node_id": "local"})
         assert one["id"] == two["id"]
         assert len(q.list()) == 1
+
+
+def test_finished_or_stale_issue_can_be_submitted_again_as_new_task():
+    with TemporaryDirectory() as td:
+        q = NodeQueue(Path(td) / "queue.db")
+        q.init()
+        one = q.submit({"issue_id": "rerun", "task_type": "UT", "app_name": "app", "node_id": "local"})
+        q.mark_result_ready(one["id"], result_path="/tmp/old.json", artifact_dir="/tmp/old", exit_code=0, state="result_ready")
+
+        two = q.submit({"issue_id": "rerun", "task_type": "UT", "app_name": "app", "node_id": "local"})
+
+        assert two["id"] != one["id"]
+        assert two["state"] == "queued"
+        assert len(q.list()) == 1
+
+
+def test_init_purges_non_active_history_rows():
+    with TemporaryDirectory() as td:
+        db = Path(td) / "queue.db"
+        q = NodeQueue(db)
+        q.init()
+        active = q.submit({"issue_id": "active", "task_type": "UT", "app_name": "app", "node_id": "local"})
+        stale = q.submit({"issue_id": "stale", "task_type": "UT", "app_name": "app", "node_id": "local"})
+        q.mark_result_ready(stale["id"], result_path="/tmp/stale.json", artifact_dir="/tmp/stale", exit_code=0, state="result_ready")
+        q.close()
+
+        q2 = NodeQueue(db)
+        q2.init()
+        rows = q2.list()
+        assert [r["issue_id"] for r in rows] == ["active"]
+        assert rows[0]["id"] == active["id"]

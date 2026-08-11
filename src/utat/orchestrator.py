@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .issue_parser import AppSpec, extract_timestamp_from_root_title, flatten_children, parse_root_description, child_by_title
+from .issue_parser import AppSpec, extract_timestamp_from_root_title, flatten_children, parse_root_description, child_by_title, resolve_run_types
 from .multica_client import MulticaClient, MulticaError
 from .queue_db import QueueDB
 
@@ -22,6 +22,7 @@ class Orchestrator:
         title = root.get("title") or ""
         desc = root.get("description") or ""
         timestamp = extract_timestamp_from_root_title(title)
+        root_run_types = resolve_run_types(title, desc)
         root_job_id = self.db.upsert_root(root_issue_id, title, status="queued")
 
         root_children = flatten_children(self.multica.issue_children(root_issue_id))
@@ -29,7 +30,7 @@ class Orchestrator:
         # Fallback: use existing app children if description is loose.
         if not specs and root_children:
             for c in root_children:
-                m = re.match(r"AT-UT-\d{12}-(.+)$", c.get("title", ""))
+                m = re.match(r"(?:AT-UT|AT|UT)-\d{12}-(.+?)(?:-应用)?$", c.get("title", ""))
                 if m:
                     specs.append(AppSpec(app_name=m.group(1), repo="", branch="master"))
 
@@ -38,7 +39,9 @@ class Orchestrator:
         routing = self.config.get("routing") or {}
 
         for idx, spec in enumerate(specs):
-            app_title = f"AT-UT-{timestamp}-{spec.app_name}"
+            run_types = spec.run_types or root_run_types
+            app_prefix = "AT-UT" if run_types == ["AT", "UT"] else run_types[0]
+            app_title = f"AT-UT-{timestamp}-{spec.app_name}" if app_prefix == "AT-UT" else f"{app_prefix}-{timestamp}-{spec.app_name}-应用"
             app_issue = child_by_title(root_children, app_title)
             if not app_issue and apply:
                 app_issue = self.multica.issue_create(title=app_title, parent=root_issue_id, status="backlog", description=self._app_desc(spec))
@@ -50,7 +53,7 @@ class Orchestrator:
             if app_issue_id:
                 exec_children = flatten_children(self.multica.issue_children(app_issue_id))
             preferred = routing.get(spec.app_name, {}).get("preferred_nodes") or ([spec.route] if spec.route else [])
-            for typ in ["AT", "UT"]:
+            for typ in run_types:
                 exec_title = f"{typ}-{timestamp}-{spec.app_name}"
                 ex = child_by_title(exec_children, exec_title)
                 if not ex and apply and app_issue_id:
@@ -61,8 +64,8 @@ class Orchestrator:
                     project_root = f"~/atut-work/{self._repo_name(spec.repo) or spec.app_name}"
                     script = "test-prj-running.sh" if typ == "UT" else ""
                     self.db.upsert_exec(root_issue_id=root_issue_id, app_task_id=app_task_id, app_issue_id=app_issue_id, issue_id=issue_id, task_type=typ, app_name=spec.app_name, repo=spec.repo, branch=spec.branch, project_root=project_root, validation_mode=spec.validation_mode, test_scope=spec.test_scope, test_script=script, preferred_nodes=preferred, status="waiting")
-                plan.append({"app": spec.app_name, "type": typ, "title": exec_title, "issue_id": issue_id, "preferred_nodes": preferred})
-        return {"root_issue_id": root_issue_id, "title": title, "timestamp": timestamp, "apps": [s.__dict__ for s in specs], "created": created, "plan": plan}
+                plan.append({"app": spec.app_name, "type": typ, "title": exec_title, "issue_id": issue_id, "preferred_nodes": preferred, "run_types": run_types})
+        return {"root_issue_id": root_issue_id, "title": title, "timestamp": timestamp, "run_types": root_run_types, "apps": [s.__dict__ for s in specs], "created": created, "plan": plan}
 
     def schedule_once(self) -> List[Dict[str, Any]]:
         self.db.refresh_app_statuses()
@@ -83,7 +86,8 @@ class Orchestrator:
         return name[:-4] if name.endswith(".git") else name
 
     def _app_desc(self, spec: AppSpec) -> str:
-        return f"应用：{spec.app_name}\n仓库：{spec.repo}\n分支：{spec.branch}\n验证模式：{spec.validation_mode}\n测试范围：{spec.test_scope}\n"
+        types = ",".join(spec.run_types or []) if spec.run_types else "继承总入口"
+        return f"应用：{spec.app_name}\n仓库：{spec.repo}\n分支：{spec.branch}\n验证模式：{spec.validation_mode}\n测试范围：{spec.test_scope}\n执行类型：{types}\n"
 
     def _exec_desc(self, spec: AppSpec, typ: str, app_issue_id: str, root_issue_id: str) -> str:
         lines = [
@@ -95,6 +99,7 @@ class Orchestrator:
             "VERSION_SOURCE：latest",
             "NO_CODE_UPDATE：false",
             f"TEST_SCOPE：{spec.test_scope}",
+            f"TASK_TYPE：{typ}",
             f"父应用 issue：https://agent-dev.uniontech.com/v25/issues/{app_issue_id}",
             f"总入口 issue：https://agent-dev.uniontech.com/v25/issues/{root_issue_id}",
             "",

@@ -9,8 +9,7 @@ from uuid import uuid4
 from .timeutil import now_iso
 
 
-TERMINAL_STATES = {"result_ready", "finalized", "failed", "blocked", "interrupted", "orphaned"}
-ACTIVE_STATES = {"starting", "running"}
+ACTIVE_STATES = {"queued", "starting", "running", "callback_pending", "callback_failed"}
 
 
 class NodeQueue:
@@ -65,6 +64,11 @@ class NodeQueue:
         )
         self._ensure_column("workspace_id", "TEXT")
         self._ensure_column("archive_path", "TEXT")
+        # The DB is an active local queue, not the history store.  Finished
+        # results live under ~/.utat-node/tasks and the archive directory.
+        # Drop stale terminal rows on startup so old result_ready rows can never
+        # be replayed after a worker restart.
+        self.purge_inactive()
 
     def _ensure_column(self, name: str, definition: str) -> None:
         cols = {row[1] for row in self.conn.execute("PRAGMA table_info(node_tasks)").fetchall()}
@@ -96,13 +100,14 @@ class NodeQueue:
     def submit(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         issue_id = str(payload["issue_id"])
         existing = self.get(issue_id)
-        if existing and existing["state"] not in TERMINAL_STATES:
+        if existing and existing["state"] in ACTIVE_STATES:
+            # Idempotent while an issue already has an active local task.
             return existing
-        if existing and existing["state"] in TERMINAL_STATES:
-            # A new submission for a finished issue is almost always an
-            # accidental duplicate callback.  Keep it idempotent unless the
-            # caller explicitly creates a new issue/attempt.
-            return existing
+        if existing:
+            # Finished/stale rows are not active queue entries.  A later explicit
+            # submit means rerun: remove the old DB row and create a fresh task_id.
+            # Logs/results remain on disk under ~/.utat-node/tasks and archive.
+            self.delete(existing["id"])
 
         task_id = str(payload.get("task_id") or uuid4())
         ts = now_iso()
@@ -232,6 +237,16 @@ class NodeQueue:
         values = list(fields.values()) + [task_id]
         with self.conn:
             self.conn.execute(f"UPDATE node_tasks SET {sets} WHERE id=?", values)
+
+
+    def purge_inactive(self) -> int:
+        placeholders = ",".join("?" for _ in ACTIVE_STATES)
+        with self.conn:
+            cur = self.conn.execute(
+                f"DELETE FROM node_tasks WHERE state NOT IN ({placeholders})",
+                tuple(sorted(ACTIVE_STATES)),
+            )
+            return cur.rowcount
 
     def delete(self, task_id: str) -> bool:
         with self.conn:

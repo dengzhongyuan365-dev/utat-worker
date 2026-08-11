@@ -13,6 +13,75 @@ class AppSpec:
     validation_mode: str = "full"
     test_scope: str = "全部 suite"
     route: str = ""
+    run_types: List[str] | None = None
+
+
+def normalize_run_types(value: str | List[str] | None) -> List[str]:
+    """Normalize user-facing AT/UT execution type declarations."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        tokens = value
+    else:
+        text = str(value).upper()
+        text = text.replace("ＡＴ", "AT").replace("ＵＴ", "UT")
+        tokens = re.split(r"[^A-Z]+", text)
+    out: List[str] = []
+    for token in tokens:
+        t = str(token).upper().strip()
+        if t in {"AT", "UT"} and t not in out:
+            out.append(t)
+    return out
+
+
+def infer_run_types_from_title(title: str) -> List[str]:
+    t = (title or "").upper().replace("ＡＴ", "AT").replace("ＵＴ", "UT")
+    if re.search(r"(^|[^A-Z0-9])AT\s*[-_/+、和与&]*\s*UT\s*[-_]", t) or t.startswith("AT-UT-"):
+        return ["AT", "UT"]
+    if re.match(r"^AT-", t) and not re.match(r"^AT-UT-", t):
+        return ["AT"]
+    if re.match(r"^UT-", t):
+        return ["UT"]
+    return ["AT", "UT"]
+
+
+def infer_run_types_from_text(text: str) -> List[str]:
+    """Return explicit content-declared run types, or [] when not declared."""
+    if not text:
+        return []
+    raw = text.strip()
+    normalized = raw.upper().replace("ＡＴ", "AT").replace("ＵＴ", "UT")
+    # Explicit key-value declarations have the highest priority.
+    patterns = [
+        r"(?:执行类型|测试类型|运行类型|任务类型|RUN_TYPES?|TEST_TYPES?)\s*[:：=]\s*([^\n\r]+)",
+        r"(?:只跑|仅跑|只执行|仅执行)\s*(AT|UT)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, normalized, re.I)
+        if m:
+            types = normalize_run_types(m.group(1))
+            if types:
+                return types
+    # Natural language declarations.
+    compact = re.sub(r"\s+", "", normalized)
+    both_patterns = [
+        r"AT[、,，/+和与&]*UT(都|全部)?(跑|执行|测试)",
+        r"(跑|执行|测试)(AT[、,，/+和与&]*UT)",
+        r"AT-UT",
+        r"AT/UT",
+    ]
+    if any(re.search(p, compact, re.I) for p in both_patterns):
+        return ["AT", "UT"]
+    if re.search(r"(只跑|仅跑|只执行|仅执行)AT", compact, re.I):
+        return ["AT"]
+    if re.search(r"(只跑|仅跑|只执行|仅执行)UT", compact, re.I):
+        return ["UT"]
+    return []
+
+
+def resolve_run_types(title: str, desc: str = "") -> List[str]:
+    explicit = infer_run_types_from_text(desc)
+    return explicit or infer_run_types_from_title(title)
 
 
 def flatten_children(children: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -132,5 +201,5 @@ def find_exec_children(app_children: List[Dict[str, Any]], timestamp: str, app: 
 
 
 def extract_timestamp_from_root_title(title: str) -> str:
-    m = re.search(r"AT-UT-(\d{12})", title)
+    m = re.search(r"(?:AT-UT|AT|UT)-(\d{12})", title or "", re.I)
     return m.group(1) if m else "000000000000"

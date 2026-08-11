@@ -69,9 +69,14 @@ class TaskRunner:
 
     def default_package_command(self) -> str:
         return (
-            "set -e; marker=$PWD/.utat-package-start; touch $marker; "
-            "dpkg-buildpackage -us -uc -b -j$(nproc); "
-            "find .. -maxdepth 1 -type f -name '*.deb' -newer $marker -print > $PWD/.utat-generated-debs; "
+            "set -e; "
+            "export TMPDIR=\"$PWD/.utat-tmp\"; mkdir -p \"$TMPDIR\"; "
+            "export DEB_BUILD_OPTIONS=\"${DEB_BUILD_OPTIONS:+$DEB_BUILD_OPTIONS }noddebs\"; "
+            "rm -f .utat-generated-debs; "
+            "marker=$PWD/.utat-package-start; touch \"$marker\"; "
+            "dpkg-buildpackage -us -uc -b -j8; "
+            "find .. -maxdepth 1 -type f -name '*.deb' -newer \"$marker\" "
+            "! -name '*-dbgsym_*' ! -name '*-dbg_*' -print | sort > $PWD/.utat-generated-debs; "
             "test -s $PWD/.utat-generated-debs"
         )
 
@@ -217,17 +222,50 @@ class TaskRunner:
                     )
                 rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, env=env, phase="source-check")
                 return root, rc, log
-            target = commit or f"origin/{branch}"
             clean = "git clean -ffdx"
-            fetch = "git fetch --all --prune"
-            checkout = f"git checkout {shlex.quote(branch)} && git reset --hard {shlex.quote(target)}"
+            # Existing worktrees are reused by repo name, so the requested repo
+            # URL must be verified every run.  Otherwise a task for a fork (for
+            # example dengzhongyuan365-dev/deepin-voice-note) can accidentally
+            # fetch/test an older origin (for example linuxdeepin/deepin-voice-note).
+            remote_sync = ""
+            if repo:
+                quoted_repo = shlex.quote(repo)
+                remote_sync = (
+                    "current_origin=$(git remote get-url origin 2>/dev/null || true); "
+                    f"if [ \"$current_origin\" != {quoted_repo} ]; then "
+                    "echo '[utat-node] origin mismatch, reset origin url'; "
+                    "if git remote get-url origin >/dev/null 2>&1; then "
+                    f"git remote set-url origin {quoted_repo}; "
+                    "else "
+                    f"git remote add origin {quoted_repo}; "
+                    "fi; "
+                    "fi; "
+                )
+            fetch = "git fetch origin --prune"
+            if commit:
+                checkout = f"git checkout --detach {shlex.quote(commit)} && git reset --hard {shlex.quote(commit)}"
+                verify = "git rev-parse HEAD"
+            else:
+                quoted_branch = shlex.quote(branch)
+                target = f"origin/{branch}"
+                checkout = f"git checkout -B {quoted_branch} {shlex.quote(target)} && git reset --hard {shlex.quote(target)}"
+                verify = (
+                    f"test \"$(git rev-parse --abbrev-ref HEAD)\" = {quoted_branch} && "
+                    "git rev-parse HEAD"
+                )
             cmd = (
+                "set -euo pipefail; "
                 "echo '[utat-node] clean untracked files before source update'; "
-                f"{clean} && "
-                f"{fetch} && {checkout} && "
+                f"{clean}; "
+                f"{remote_sync}"
+                "echo '[utat-node] fetch requested origin'; "
+                f"{fetch}; "
+                f"{checkout}; "
                 "echo '[utat-node] clean untracked files after source update'; "
-                f"{clean} && "
-                "git status --short && git rev-parse HEAD"
+                f"{clean}; "
+                "echo '[utat-node] final source state'; "
+                "git remote -v; git branch --show-current; git status --short; "
+                f"{verify}"
             )
             rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, env=env, phase="source-sync")
             return root, rc, log

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import xml.etree.ElementTree as ET
@@ -42,8 +43,28 @@ class UTRunner(TaskRunner):
         report_dirs = [root / rel for rel in _common_report_dirs()]
         parsed = parse_ut_log(log, report_dirs=report_dirs)
         artifacts: List[Path] = [source_log, workflow_log, log]
+
+        # UT 脚本可能在用例失败时提前 exit 1，导致脚本自己的 lcov/genhtml
+        # 覆盖率步骤没有执行。只要测试已经产生 .gcda/.gcno，worker 就补采集
+        # 真实覆盖率，保证 result.metrics.line_coverage/function_coverage 有值。
+        if not _has_coverage(parsed):
+            coverage_metrics, coverage_artifacts = self._collect_coverage_after_ut(root, task_env)
+            if coverage_metrics:
+                parsed.update(coverage_metrics)
+            artifacts.extend(coverage_artifacts)
+
         # Common coverage/report dirs.
-        for rel in ["tests/build-qt6/coverage", "build/coverage", "build-ut/coverage", "tests/build-qt6/report"]:
+        for rel in [
+            "tests/build-qt6/coverage",
+            "build/coverage",
+            "build-ut/coverage",
+            "tests/build-qt6/report",
+            "tests/build/report",
+            "build/report",
+            "build-ut/report",
+            "build/html",
+            "build-ut/html",
+        ]:
             tar = self.tar_dir(root / rel, rel.replace("/", "-") + ".tar.gz")
             if tar:
                 artifacts.append(tar)
@@ -53,6 +74,67 @@ class UTRunner(TaskRunner):
         status = "done" if rc == 0 and failed == 0 and failed_cases == 0 and crashed == 0 else "failed"
         return self._result(status, "ut-finished", artifacts, exit_code=rc, metrics=parsed)
 
+
+    def _collect_coverage_after_ut(self, root: Path, env: Dict[str, str]) -> tuple[Dict[str, Any], List[Path]]:
+        artifacts: List[Path] = []
+        log = self.logs_dir / "ut-coverage-collect.log"
+        metrics: Dict[str, Any] = {}
+
+        gcda_files = list(root.glob("**/*.gcda"))
+        gcno_files = list(root.glob("**/*.gcno"))
+        if not gcda_files and not gcno_files:
+            log.write_text("未发现 .gcda/.gcno，无法补采集 UT 覆盖率。\n", encoding="utf-8")
+            artifacts.append(log)
+            return metrics, artifacts
+
+        if not _command_exists("lcov"):
+            log.write_text("发现覆盖率原始文件，但系统缺少 lcov，无法补采集 UT 覆盖率。\n", encoding="utf-8")
+            artifacts.append(log)
+            return metrics, artifacts
+
+        out_dir = self.artifacts_dir / "ut-coverage"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        all_info = shlex.quote(str(out_dir / "coverage-all.info"))
+        src_info = shlex.quote(str(out_dir / "coverage-src.info"))
+        filtered_info = shlex.quote(str(out_dir / "coverage-filtered.info"))
+        summary = shlex.quote(str(out_dir / "coverage-summary.txt"))
+        html = shlex.quote(str(out_dir / "html"))
+        quoted_root = shlex.quote(str(root))
+        cmd = f"""
+set -u
+echo '[utat-node] fallback collect UT coverage'
+echo '[utat-node] root: {quoted_root}'
+echo '[utat-node] gcda_count:' $(find . -name '*.gcda' | wc -l)
+echo '[utat-node] gcno_count:' $(find . -name '*.gcno' | wc -l)
+ALL={all_info}
+SRC={src_info}
+FILTERED={filtered_info}
+SUMMARY={summary}
+HTML={html}
+lcov -d . -c -o "$ALL"
+INPUT="$ALL"
+if lcov --extract "$INPUT" '*/src/*' -o "$SRC"; then INPUT="$SRC"; else echo '[utat-node] lcov extract */src/* failed, use all coverage'; fi
+if lcov --remove "$INPUT" '*/tests/*' -o "$FILTERED"; then INPUT="$FILTERED"; else echo '[utat-node] lcov remove */tests/* failed, keep previous coverage'; fi
+lcov --summary "$INPUT" | tee "$SUMMARY"
+if command -v genhtml >/dev/null 2>&1; then genhtml -o "$HTML" "$INPUT" || true; fi
+""".strip()
+        rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, env=env, phase="ut-coverage-collect")
+        artifacts.append(log)
+        summary_path = out_dir / "coverage-summary.txt"
+        if summary_path.exists():
+            metrics.update(parse_coverage_text(summary_path.read_text(encoding="utf-8", errors="ignore")))
+            artifacts.append(summary_path)
+        else:
+            metrics.update(parse_coverage_text(log.read_text(encoding="utf-8", errors="ignore")))
+        if metrics:
+            metrics["coverage_source"] = "lcov-fallback"
+        if rc != 0 and not metrics:
+            with log.open("a", encoding="utf-8") as fp:
+                fp.write("\n[utat-node] fallback coverage collection failed and no coverage metrics parsed.\n")
+        tar = self.tar_dir(out_dir, "ut-coverage.tar.gz")
+        if tar:
+            artifacts.append(tar)
+        return metrics, artifacts
     def _write_error(self, message: str) -> Path:
         path = self.logs_dir / "environment-error.log"
         path.write_text(message + "\n", encoding="utf-8")
@@ -106,6 +188,35 @@ def _strip_ansi(text: str) -> str:
 
 def _rate(passed: int, total: int) -> float:
     return round((passed / total * 100), 2) if total else 0.0
+
+
+def _command_exists(command: str) -> bool:
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        if part and (Path(part) / command).exists():
+            return True
+    return False
+
+
+def _has_coverage(metrics: Dict[str, Any]) -> bool:
+    return bool(metrics.get("line_coverage")) and bool(metrics.get("function_coverage"))
+
+
+def parse_coverage_text(text: str) -> Dict[str, Any]:
+    text = _strip_ansi(text)
+    metrics: Dict[str, Any] = {}
+    line_matches = list(re.finditer(r"lines\.+:\s*([0-9.]+%)\s*\((\d+) of (\d+) lines\)", text))
+    if line_matches:
+        line_cov = line_matches[-1]
+        metrics["line_coverage"] = line_cov.group(1)
+        metrics["line_covered"] = int(line_cov.group(2))
+        metrics["line_total"] = int(line_cov.group(3))
+    fn_matches = list(re.finditer(r"functions\.+:\s*([0-9.]+%)\s*\((\d+) of (\d+) functions\)", text))
+    if fn_matches:
+        fn_cov = fn_matches[-1]
+        metrics["function_coverage"] = fn_cov.group(1)
+        metrics["function_covered"] = int(fn_cov.group(2))
+        metrics["function_total"] = int(fn_cov.group(3))
+    return metrics
 
 
 def normalize_ut_metrics(metrics: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -207,16 +318,7 @@ def parse_ut_log(path: Path, *, report_dirs: Iterable[Path] = ()) -> Dict[str, A
                 metrics.update(gtest_metrics)
                 metrics["metric_source"] = "gtest-log-summary"
 
-    line_matches = list(re.finditer(r"lines\.+:\s*([0-9.]+%)\s*\((\d+) of (\d+) lines\)", text))
-    if line_matches:
-        line_cov = line_matches[-1]
-        metrics["line_coverage"] = line_cov.group(1)
-        metrics["line_covered"] = int(line_cov.group(2)); metrics["line_total"] = int(line_cov.group(3))
-    fn_matches = list(re.finditer(r"functions\.+:\s*([0-9.]+%)\s*\((\d+) of (\d+) functions\)", text))
-    if fn_matches:
-        fn_cov = fn_matches[-1]
-        metrics["function_coverage"] = fn_cov.group(1)
-        metrics["function_covered"] = int(fn_cov.group(2)); metrics["function_total"] = int(fn_cov.group(3))
+    metrics.update(parse_coverage_text(text))
     return normalize_ut_metrics(metrics)
 
 

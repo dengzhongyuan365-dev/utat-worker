@@ -34,6 +34,8 @@ DEFAULTS: Dict[str, Any] = {
         "queue_db": str(DEFAULT_NODE_DB),
         "work_root": "~/atut-work",
         "archive_root": "~/Documents/ATUT-WORK-Archive",
+        "worker_cwd": "",
+        "multica_cwd": "",
         "poll_interval_sec": 5,
         "idle_exit_sec": 300,
     },
@@ -83,7 +85,7 @@ def apply_env_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(file_env)
     # Only non-secret routing/runtime values are allowed from the environment.
     # Multica token is intentionally fixed in code and must not be overridden by env.
-    for key in ("MULTICA_SERVER_URL", "MULTICA_WORKSPACE_ID", "UTAT_NODE_ID", "UTAT_NODE_HOME", "UTAT_NODE_ARCHIVE_ROOT", "UTAT_NODE_IDLE_EXIT_SEC"):
+    for key in ("MULTICA_SERVER_URL", "MULTICA_WORKSPACE_ID", "UTAT_NODE_ID", "UTAT_NODE_HOME", "UTAT_NODE_ARCHIVE_ROOT", "UTAT_NODE_WORKER_CWD", "UTAT_NODE_MULTICA_CWD", "UTAT_NODE_IDLE_EXIT_SEC"):
         if os.environ.get(key):
             merged[key] = os.environ[key]
     if merged.get("MULTICA_WORKSPACE_ID"):
@@ -100,6 +102,10 @@ def apply_env_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         out.setdefault("node", {})["queue_db"] = str(Path(merged["UTAT_NODE_HOME"]).expanduser() / "queue.db")
     if merged.get("UTAT_NODE_ARCHIVE_ROOT"):
         out.setdefault("node", {})["archive_root"] = merged["UTAT_NODE_ARCHIVE_ROOT"]
+    if merged.get("UTAT_NODE_WORKER_CWD"):
+        out.setdefault("node", {})["worker_cwd"] = merged["UTAT_NODE_WORKER_CWD"]
+    if merged.get("UTAT_NODE_MULTICA_CWD"):
+        out.setdefault("node", {})["multica_cwd"] = merged["UTAT_NODE_MULTICA_CWD"]
     if merged.get("UTAT_NODE_IDLE_EXIT_SEC"):
         try:
             out.setdefault("node", {})["idle_exit_sec"] = int(merged["UTAT_NODE_IDLE_EXIT_SEC"])

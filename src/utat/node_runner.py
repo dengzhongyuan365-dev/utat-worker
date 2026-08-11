@@ -8,6 +8,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -33,6 +34,8 @@ class NodeRunner:
         self.idle_exit_sec = int(node_cfg.get("idle_exit_sec") if node_cfg.get("idle_exit_sec") is not None else 300)
         self.home = Path(expand_path(node_cfg.get("home") or "~/.utat-node"))
         self.home.mkdir(parents=True, exist_ok=True)
+        self.worker_cwd = Path(expand_path(str(node_cfg.get("worker_cwd") or self.home / "worker-cwd")))
+        self.multica_cwd = Path(expand_path(str(node_cfg.get("multica_cwd") or self.home / "multica-cwd")))
         self.queue = NodeQueue(db_path or node_cfg.get("queue_db") or self.home / "queue.db")
         self.queue.init()
         self.poll_interval = int(node_cfg.get("poll_interval_sec") or 5)
@@ -47,6 +50,7 @@ class NodeRunner:
             server_url=mc_cfg.get("server_url", ""),
             profile=mc_cfg.get("profile", ""),
             token=mc_cfg.get("token", ""),
+            safe_cwd=self.multica_cwd,
         )
 
     def submit(self, payload: Dict[str, Any], *, auto_start: bool = True) -> Dict[str, Any]:
@@ -74,17 +78,98 @@ class NodeRunner:
         os.close(fd)
         log_path = self.home / "logs" / "worker.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [os.environ.get("UTAT_NODE_BIN", "utat-node"), "worker", "run", "--node-id", self.node_id]
+        node_bin = self._node_bin()
+        cmd = [node_bin, "worker", "run", "--node-id", self.node_id]
+        env = self._worker_process_env()
+        worker_cwd = self.worker_cwd
+        worker_cwd.mkdir(parents=True, exist_ok=True)
         with log_path.open("ab") as log:
-            log.write(f"[{now_iso()}] starting worker: {cmd}\n".encode())
+            log.write(f"[{now_iso()}] starting worker: {cmd} cwd={worker_cwd}\n".encode())
             subprocess.Popen(
                 cmd,
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 close_fds=True,
+                env=env,
+                cwd=str(worker_cwd),
             )
         return True
+
+    def _node_bin(self) -> str:
+        configured = str(os.environ.get("UTAT_NODE_BIN") or "").strip()
+        if configured:
+            return configured
+
+        cfg_bin = str((self.config.get("node") or {}).get("node_bin") or "").strip()
+        if cfg_bin:
+            return str(Path(cfg_bin).expanduser())
+
+        # When running from the installed venv, sys.argv[0] is usually the
+        # console script path.  Prefer that over PATH so Multica agent tasks with
+        # a minimal PATH can still auto-start the detached worker.
+        argv0 = Path(sys.argv[0]).expanduser() if sys.argv and sys.argv[0] else Path()
+        if argv0.name == "utat-node" and argv0.exists():
+            return str(argv0)
+
+        default_bin = Path.home() / ".utat-worker" / "venv" / "bin" / "utat-node"
+        if default_bin.exists():
+            return str(default_bin)
+
+        found = shutil.which("utat-node")
+        if found:
+            return found
+        return "utat-node"
+
+    def _worker_process_env(self) -> Dict[str, str]:
+        """Return a clean environment for the detached local worker.
+
+        The submit command may run inside a Multica agent task.  The detached
+        background worker must not inherit agent task context variables; result
+        callbacks use the normal CLI login created from the code-pinned mul_
+        token instead of a short-lived mat_ task token.
+        """
+        keep = (
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TERM",
+            "DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "QT_QPA_PLATFORM",
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "INSTALL_PASSWORD",
+            "UTAT_HOME",
+            "UTAT_NODE_HOME",
+            "UTAT_NODE_BIN",
+        )
+        env = {k: v for k, v in os.environ.items() if k in keep and v}
+        env.setdefault("HOME", str(Path.home()))
+        env.setdefault("USER", os.environ.get("USER") or Path.home().name)
+        env.setdefault("LOGNAME", env["USER"])
+        env.setdefault("SHELL", os.environ.get("SHELL") or "/bin/bash")
+        env.setdefault("PATH", os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin")
+        env.setdefault("LANG", os.environ.get("LANG") or "C.UTF-8")
+        env.setdefault("DISPLAY", os.environ.get("DISPLAY") or ":0")
+        env.setdefault("XAUTHORITY", os.environ.get("XAUTHORITY") or str(Path.home() / ".Xauthority"))
+        env.setdefault("XDG_RUNTIME_DIR", os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", os.environ.get("DBUS_SESSION_BUS_ADDRESS") or f"unix:path=/run/user/{os.getuid()}/bus")
+        env.setdefault("QT_QPA_PLATFORM", os.environ.get("QT_QPA_PLATFORM") or "dxcb;xcb")
+        return env
 
     def worker_loop(self) -> None:
         lock_path = self.locks_dir / "worker.lock"
@@ -99,6 +184,12 @@ class NodeRunner:
             while True:
                 task = self.queue.claim_next(self.node_id, os.getpid())
                 if not task:
+                    # Self-heal callbacks only for active callback_pending /
+                    # callback_failed rows. Finished tasks are deleted from the
+                    # queue, so worker restart never replays historical results.
+                    retried = self.retry_failed_callbacks()
+                    if retried:
+                        idle_since = time.monotonic()
                     if self.idle_exit_sec > 0:
                         idle_for = time.monotonic() - idle_since
                         if idle_for >= self.idle_exit_sec:
@@ -114,6 +205,42 @@ class NodeRunner:
                 idle_since = time.monotonic()
         finally:
             os.close(fd)
+
+
+    def retry_failed_callbacks(self) -> int:
+        retried = 0
+        now = time.monotonic()
+        for state in ("callback_pending", "callback_failed"):
+            for task in self.queue.list(state):
+                retried += self._retry_one_callback(task, now)
+        return retried
+
+    def _retry_one_callback(self, task: Dict[str, Any], now: float) -> int:
+        task_dir = self.tasks_dir / task["id"]
+        callback_error = task_dir / "multica-callback-error.txt"
+        if task.get("state") == "callback_failed" and not callback_error.exists():
+            callback_error.write_text("callback_failed without error detail; retrying", encoding="utf-8")
+        throttle = task_dir / "callback-last-retry.monotonic"
+        try:
+            last = float(throttle.read_text(encoding="utf-8")) if throttle.exists() else 0.0
+        except Exception:
+            last = 0.0
+        if now - last < 60:
+            return 0
+        throttle.write_text(str(now), encoding="utf-8")
+        result_path = Path(str(task.get("result_path") or task_dir / "result.json"))
+        if not result_path.exists():
+            self.queue.delete(task["id"])
+            return 0
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            artifact_dir = Path(str(task.get("artifact_dir") or task_dir / "artifacts"))
+            self.publish_result_ready(task, result, result_path, artifact_dir)
+            return 1
+        except Exception as exc:
+            callback_error.write_text(str(exc), encoding="utf-8")
+            self.queue.update(task["id"], state="callback_failed", phase="callback-failed", error=str(exc))
+            return 0
 
     def run_task(self, task: Dict[str, Any]) -> None:
         task_id = task["id"]
@@ -176,10 +303,10 @@ class NodeRunner:
             artifact_dir=str(artifact_dir),
             archive_path=str(archive_path) if not archive_error else "",
             exit_code=result.get("exit_code"),
-            state="result_ready" if result.get("status") in {"done", "failed", "blocked"} else "failed",
+            state="callback_pending",
             error=result.get("reason", "") if result.get("status") != "done" else archive_error,
         )
-        self._write_local_state(task_dir, task_id, "result_ready", result)
+        self._write_local_state(task_dir, task_id, "callback_pending", result)
         self.publish_result_ready(task, result, result_path, artifact_dir)
 
 
@@ -357,6 +484,14 @@ class NodeRunner:
                 temp_dir=self.tasks_dir / task["id"],
             )
             callback_error.unlink(missing_ok=True)
+            self._write_local_state(self.tasks_dir / task["id"], task["id"], "done", {
+                "phase": "callback-done",
+                "issue_id": issue_id,
+                "result_path": str(result_path),
+                "artifact_dir": str(artifact_dir),
+                "updated_at": now_iso(),
+            })
+            self.queue.delete(task["id"])
         except Exception as exc:
             if MulticaClient.is_not_found_error(exc):
                 tombstone = {
@@ -376,6 +511,7 @@ class NodeRunner:
                 callback_error.unlink(missing_ok=True)
                 return
             callback_error.write_text(str(exc), encoding="utf-8")
+            self.queue.update(task["id"], state="callback_failed", phase="callback-failed", error=str(exc))
 
     def _callback_agent(self, task: Dict[str, Any]) -> tuple[str, str]:
         task_type = str(task.get("task_type") or "").upper()
@@ -428,6 +564,7 @@ class NodeRunner:
             server_url=mc_cfg.get("server_url", ""),
             profile=mc_cfg.get("profile", ""),
             token=mc_cfg.get("token", ""),
+            safe_cwd=self.multica_cwd,
         )
 
     def cleanup_missing_issues(self, *, root_issue_id: str = "") -> Dict[str, Any]:

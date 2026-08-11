@@ -33,7 +33,10 @@ def test_full_mode_defaults_package_and_install_commands(tmp_path):
     runner = DummyRunner({"id": "t1", "repo": "https://example.invalid/deepin-voice-note", "execution_mode": "full", "environment": {}}, tmp_path / "task2")
     package_cmd = runner.build_command_for("package_command", root)
     install_cmd = runner.build_command_for("install_command", root)
-    assert "dpkg-buildpackage -us -uc -b -j$(nproc)" in package_cmd
+    assert "dpkg-buildpackage -us -uc -b -j8" in package_cmd
+    assert "DEB_BUILD_OPTIONS" in package_cmd
+    assert "noddebs" in package_cmd
+    assert "TMPDIR" in package_cmd
     assert ".utat-generated-debs" in package_cmd
     assert "apt install -y" in install_cmd
     assert "command -v deepin-voice-note" in install_cmd
@@ -59,7 +62,10 @@ def test_full_mode_overrides_bare_dpkg_package_command(tmp_path):
         "environment": {},
     }, tmp_path / "task4")
     package_cmd = runner.build_command_for("package_command", root)
-    assert "dpkg-buildpackage -us -uc -b -j$(nproc)" in package_cmd
+    assert "dpkg-buildpackage -us -uc -b -j8" in package_cmd
+    assert "DEB_BUILD_OPTIONS" in package_cmd
+    assert "noddebs" in package_cmd
+    assert "TMPDIR" in package_cmd
     assert ".utat-generated-debs" in package_cmd
 
 
@@ -80,3 +86,27 @@ def test_full_mode_overrides_glob_deb_install_command(tmp_path):
     assert "apt install -y $debs" in install_cmd
     assert "sudo -S" in install_cmd
     assert "${INSTALL_PASSWORD:-1}" in install_cmd
+
+
+def test_prepare_source_existing_repo_resets_origin_and_checks_out_requested_branch(tmp_path):
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    runner = DummyRunner({
+        "id": "t-source",
+        "repo": "https://github.com/dengzhongyuan365-dev/deepin-voice-note",
+        "branch": "bug-fix-6-24-1",
+        "project_root": str(root),
+        "execution_mode": "full",
+        "no_code_update": False,
+        "environment": {},
+    }, tmp_path / "task-source")
+
+    resolved, rc, _ = runner.prepare_source()
+
+    assert resolved == root
+    assert rc == 0
+    cmd = runner.seen_cmd[2]
+    assert "git remote set-url origin https://github.com/dengzhongyuan365-dev/deepin-voice-note" in cmd
+    assert "git fetch origin --prune" in cmd
+    assert "git checkout -B bug-fix-6-24-1 origin/bug-fix-6-24-1" in cmd
+    assert 'test "$(git rev-parse --abbrev-ref HEAD)" = bug-fix-6-24-1' in cmd

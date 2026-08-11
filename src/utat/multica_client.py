@@ -15,7 +15,7 @@ class MulticaError(RuntimeError):
 
 
 class MulticaClient:
-    def __init__(self, workspace_id: str, cli: str = "multica", server_url: str = "", profile: str = "", token: str = ""):
+    def __init__(self, workspace_id: str, cli: str = "multica", server_url: str = "", profile: str = "", token: str = "", safe_cwd: str | Path | None = None):
         self.workspace_id = workspace_id
         self.cli = cli
         self.server_url = server_url
@@ -23,6 +23,7 @@ class MulticaClient:
         # Background callbacks must always use the code-pinned token.
         # Do not trust environment variables, config token overrides, or stale CLI login state.
         self.token = HARDCODED_MULTICA_TOKEN
+        self.safe_cwd = Path(safe_cwd).expanduser() if safe_cwd else Path(os.environ.get("UTAT_NODE_HOME", str(Path.home() / ".utat-node"))).expanduser() / "multica-cwd"
 
     def _base(self) -> List[str]:
         cmd = [self.cli]
@@ -36,20 +37,54 @@ class MulticaClient:
 
     def run(self, args: List[str], *, input_text: str | None = None, timeout: int = 60, check: bool = True, cwd: str | Path | None = None) -> subprocess.CompletedProcess:
         env = self._env()
-        p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env, cwd=str(cwd) if cwd is not None else None)
+        safe_cwd = self._safe_cwd(cwd)
+        p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env, cwd=str(safe_cwd))
         if self.token and self._is_auth_error(p):
-            self._login_with_token(env=env, cwd=cwd)
-            p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env, cwd=str(cwd) if cwd is not None else None)
+            self._login_with_token(env=env, cwd=safe_cwd)
+            p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env, cwd=str(safe_cwd))
         if check and p.returncode != 0:
             raise MulticaError(f"multica {' '.join(args)} failed rc={p.returncode}: {p.stderr.strip()}")
         return p
 
+    def _safe_cwd(self, cwd: str | Path | None = None) -> Path:
+        # Never let background callbacks run from a Multica agent workdir.  The
+        # CLI detects .multica/daemon_task_context.json in cwd/parents and then
+        # rejects the normal pinned mul_ token as non task-scoped.
+        p = Path(cwd).expanduser() if cwd is not None else self.safe_cwd
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
     def _env(self) -> Dict[str, str]:
-        env = os.environ.copy()
-        # Remove token values inherited from the shell so callbacks cannot depend
-        # on, or be broken by, external MULTICA_TOKEN/UTAT_MULTICA_TOKEN settings.
-        env.pop("MULTICA_TOKEN", None)
-        env.pop("UTAT_MULTICA_TOKEN", None)
+        # Build a clean non-agent environment.  Workers are usually started by a
+        # Multica agent process; inheriting its task-context variables makes the
+        # CLI enter "agent execution context" and reject the pinned mul_ token
+        # with: "requires MULTICA_TOKEN to be a task-scoped mat_ token".
+        keep = (
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TERM",
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+        )
+        env = {k: v for k, v in os.environ.items() if k in keep and v}
+        env.setdefault("HOME", str(Path.home()))
+        env.setdefault("USER", os.environ.get("USER") or Path.home().name)
+        env.setdefault("LOGNAME", env["USER"])
+        env.setdefault("SHELL", os.environ.get("SHELL") or "/bin/bash")
+        env.setdefault("PATH", os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin")
+        env.setdefault("LANG", os.environ.get("LANG") or "C.UTF-8")
         if self.workspace_id:
             env["MULTICA_WORKSPACE_ID"] = self.workspace_id
         if self.server_url:
@@ -73,7 +108,7 @@ class MulticaClient:
         if self.profile:
             login_cmd += ["--profile", self.profile]
         login_cmd += ["login", "--token", self.token]
-        p = subprocess.run(login_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, env=env, cwd=str(cwd) if cwd is not None else None)
+        p = subprocess.run(login_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, env=env, cwd=str(self._safe_cwd(cwd)))
         if p.returncode != 0:
             raise MulticaError(f"multica login --token failed rc={p.returncode}: {p.stderr.strip()}")
 
