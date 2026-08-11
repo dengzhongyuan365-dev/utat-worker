@@ -45,15 +45,95 @@ class TaskRunner:
             self.heartbeat(state)
 
     def task_environment(self) -> Dict[str, str]:
-        return resolve_environment(self.task)
+        env = resolve_environment(self.task)
+        # GUI/Qt applications need a real desktop session on desktop nodes.
+        # These defaults match the common UOS desktop login session on the test machines.
+        env.setdefault("DISPLAY", __import__("os").environ.get("DISPLAY") or ":0")
+        env.setdefault("XAUTHORITY", __import__("os").environ.get("XAUTHORITY") or str(Path.home() / ".Xauthority"))
+        env.setdefault("XDG_RUNTIME_DIR", __import__("os").environ.get("XDG_RUNTIME_DIR") or f"/run/user/{__import__('os').getuid()}")
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", __import__("os").environ.get("DBUS_SESSION_BUS_ADDRESS") or f"unix:path=/run/user/{__import__('os').getuid()}/bus")
+        env.setdefault("QT_QPA_PLATFORM", __import__("os").environ.get("QT_QPA_PLATFORM") or "dxcb;xcb")
+        return env
 
     def run_command_if_present(self, key: str, root: Path, *, log_name: str, phase: str) -> tuple[int, Optional[Path]]:
-        command = str(self.task.get(key) or "").strip()
-        if not command or not self.task.get("build_enabled", True):
+        if not self.task.get("build_enabled", True):
+            return 0, None
+        command = self.build_command_for(key, root)
+        if not command:
             return 0, None
         log = self.logs_dir / log_name
-        rc = self.run_process(["bash", "-lc", command], cwd=root, log_path=log, env=self.task_environment(), phase=phase)
+        task_env = self.task_environment()
+        command = self.with_noninteractive_sudo(command, task_env, allow_sudo=phase in {"build-dep", "install"})
+        rc = self.run_process(["bash", "-lc", command], cwd=root, log_path=log, env=task_env, phase=phase)
         return rc, log
+
+    def default_package_command(self) -> str:
+        return (
+            "set -e; marker=$PWD/.utat-package-start; touch $marker; "
+            "dpkg-buildpackage -us -uc -b -j$(nproc); "
+            "find .. -maxdepth 1 -type f -name '*.deb' -newer $marker -print > $PWD/.utat-generated-debs; "
+            "test -s $PWD/.utat-generated-debs"
+        )
+
+    def default_install_command(self) -> str:
+        app_cmd = shlex.quote(self.app_command())
+        return (
+            "set -e; test -s .utat-generated-debs; "
+            "debs=$(grep -vE '(-dbgsym_|-dbg_)' .utat-generated-debs | tr '\n' ' '); "
+            "test -n \"$debs\"; "
+            "printf '%s\\n' \"${INSTALL_PASSWORD:-1}\" | sudo -S -p '' apt install -y $debs; "
+            f"command -v {app_cmd}"
+        )
+
+    def should_override_full_mode_command(self, key: str, command: str) -> bool:
+        if not command or not self.is_full_mode():
+            return False
+        # Prompt-generated bare dpkg-buildpackage does not record the newly built debs,
+        # so the following install step cannot reliably know which files to install.
+        if key == "package_command" and "dpkg-buildpackage" in command and ".utat-generated-debs" not in command:
+            return True
+        # apt install does not expand quoted/payload glob patterns like ./app_*.deb,
+        # and deb files are generated in the parent directory.  Use the recorded
+        # .utat-generated-debs list instead of trusting fragile glob commands.
+        if key == "install_command" and "*.deb" in command:
+            return True
+        return False
+
+    def build_command_for(self, key: str, root: Path) -> str:
+        command = str(self.task.get(key) or "").strip()
+        has_debian_control = (root / "debian" / "control").exists()
+        if command and not (has_debian_control and self.should_override_full_mode_command(key, command)):
+            return command
+        if not self.is_full_mode() or not has_debian_control:
+            return command if command else ""
+        if key == "package_command":
+            return self.default_package_command()
+        if key == "install_command":
+            return self.default_install_command()
+        return ""
+
+    def is_full_mode(self) -> bool:
+        mode = str(self.task.get("execution_mode") or self.task.get("validation_mode") or "full").lower()
+        return mode in {"", "full", "latest", "all"} and not bool(self.task.get("no_code_update"))
+
+    def repo_name(self) -> str:
+        repo = str(self.task.get("repo") or "").rstrip("/")
+        name = repo.split("/")[-1] if repo else str(self.task.get("app_name") or "")
+        return name[:-4] if name.endswith(".git") else name
+
+    def app_command(self) -> str:
+        return str(self.task.get("app_command") or self.task.get("binary") or self.repo_name()).strip()
+
+    def with_noninteractive_sudo(self, command: str, env: Dict[str, str], *, allow_sudo: bool) -> str:
+        if "sudo" not in command or "sudo -S" in command:
+            return command
+        if not allow_sudo:
+            return command
+        install_password = env.get("INSTALL_PASSWORD") or os.environ.get("INSTALL_PASSWORD") or "1"
+        env.setdefault("INSTALL_PASSWORD", install_password)
+        before, after = command.split("sudo", 1)
+        return f"{before}printf '%s\n' \"$INSTALL_PASSWORD\" | sudo -S -p '' {after.lstrip()}"
+
 
     def run_build_steps(self, root: Path) -> tuple[int, List[Path]]:
         logs: List[Path] = []
@@ -98,7 +178,7 @@ class TaskRunner:
                     log.write((f"\n[{now_iso()}] EXIT: {rc}\n").encode())
                     return rc
                 self.update_state(phase=phase, pid=p.pid, log_path=str(log_path), exit_code=None)
-                time.sleep(30)
+                time.sleep(5)
 
     def project_root(self) -> Path:
         pr = self.task.get("project_root") or ""
@@ -108,7 +188,7 @@ class TaskRunner:
         name = repo.rstrip("/").split("/")[-1]
         if name.endswith(".git"):
             name = name[:-4]
-        return Path.home() / "tests" / name
+        return Path.home() / "atut-work" / name
 
     def prepare_source(self) -> tuple[Path, int, Path]:
         root = self.project_root()
@@ -127,13 +207,28 @@ class TaskRunner:
             if no_update:
                 cmd = "git status --short; git rev-parse HEAD"
                 if commit:
-                    cmd = f"git checkout --detach {shlex.quote(commit)}; git status --short; git rev-parse HEAD"
+                    cmd = (
+                        "echo '[utat-node] clean untracked files before source checkout'; "
+                        "git clean -ffdx && "
+                        f"git checkout --detach {shlex.quote(commit)} && git reset --hard {shlex.quote(commit)} && "
+                        "echo '[utat-node] clean untracked files after source checkout'; "
+                        "git clean -ffdx && "
+                        "git status --short && git rev-parse HEAD"
+                    )
                 rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, env=env, phase="source-check")
                 return root, rc, log
             target = commit or f"origin/{branch}"
+            clean = "git clean -ffdx"
             fetch = "git fetch --all --prune"
             checkout = f"git checkout {shlex.quote(branch)} && git reset --hard {shlex.quote(target)}"
-            cmd = f"{fetch} && {checkout} && git status --short && git rev-parse HEAD"
+            cmd = (
+                "echo '[utat-node] clean untracked files before source update'; "
+                f"{clean} && "
+                f"{fetch} && {checkout} && "
+                "echo '[utat-node] clean untracked files after source update'; "
+                f"{clean} && "
+                "git status --short && git rev-parse HEAD"
+            )
             rc = self.run_process(["bash", "-lc", cmd], cwd=root, log_path=log, env=env, phase="source-sync")
             return root, rc, log
         if no_update:
@@ -155,9 +250,10 @@ class TaskRunner:
         if not command:
             log.write_text(f"[{now_iso()}] 未配置依赖安装命令，或项目没有 debian/control，跳过依赖安装。\n", encoding="utf-8")
             return 0, log
-        if os.environ.get("INSTALL_PASSWORD") and "sudo" in command:
-            command = f"printf '%s\n' \"$INSTALL_PASSWORD\" | sudo -S {command.split('sudo', 1)[1].lstrip()}"
-        rc = self.run_process(["bash", "-lc", command], cwd=root, log_path=log, env=self.task_environment(), phase="build-dep")
+
+        task_env = self.task_environment()
+        command = self.with_noninteractive_sudo(command, task_env, allow_sudo=True)
+        rc = self.run_process(["bash", "-lc", command], cwd=root, log_path=log, env=task_env, phase="build-dep")
         return rc, log
 
     def tar_dir(self, source: Path, target_name: str) -> Optional[Path]:

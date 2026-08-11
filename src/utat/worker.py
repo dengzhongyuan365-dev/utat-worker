@@ -29,7 +29,7 @@ class Worker:
             server_url=(config.get("multica") or {}).get("server_url", ""),
             profile=(config.get("multica") or {}).get("profile", ""),
         )
-        self.work_root = Path(expand_path(self.node.get("work_root") or "~/tests")).expanduser()
+        self.work_root = Path(expand_path(self.node.get("work_root") or "~/atut-work")).expanduser()
         # AT/UT are desktop/application tests.  Keep one active task per
         # physical node regardless of a stale or overly broad config value.
         self.max_parallel = 1

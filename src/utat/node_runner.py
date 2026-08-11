@@ -3,6 +3,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -17,6 +19,7 @@ from .runner.at_runner import ATRunner
 from .runner.ut_runner import UTRunner
 from .timeutil import now_iso
 from .task_payload import normalize_payload, validate_payload
+from .result_writer import ut_result_metric_lines
 
 
 class NodeRunner:
@@ -25,7 +28,9 @@ class NodeRunner:
         node_cfg = config.get("node") or {}
         worker_cfg = config.get("worker") or {}
         self.node_id = node_cfg.get("node_id") or worker_cfg.get("node_id") or socket.gethostname()
-        self.work_root = Path(expand_path(node_cfg.get("work_root") or worker_cfg.get("work_root") or "~/tests"))
+        self.work_root = Path(expand_path(node_cfg.get("work_root") or worker_cfg.get("work_root") or "~/atut-work"))
+        self.archive_root = Path(expand_path(node_cfg.get("archive_root") or "~/Documents/ATUT-WORK-Archive"))
+        self.idle_exit_sec = int(node_cfg.get("idle_exit_sec") if node_cfg.get("idle_exit_sec") is not None else 300)
         self.home = Path(expand_path(node_cfg.get("home") or "~/.utat-node"))
         self.home.mkdir(parents=True, exist_ok=True)
         self.queue = NodeQueue(db_path or node_cfg.get("queue_db") or self.home / "queue.db")
@@ -90,12 +95,23 @@ class NodeRunner:
             os.close(fd)
             return
         try:
+            idle_since = time.monotonic()
             while True:
                 task = self.queue.claim_next(self.node_id, os.getpid())
                 if not task:
-                    time.sleep(self.poll_interval)
+                    if self.idle_exit_sec > 0:
+                        idle_for = time.monotonic() - idle_since
+                        if idle_for >= self.idle_exit_sec:
+                            print(f"[{now_iso()}] worker idle for {int(idle_for)}s, exit")
+                            break
+                        sleep_for = min(self.poll_interval, max(1, int(self.idle_exit_sec - idle_for)))
+                    else:
+                        sleep_for = self.poll_interval
+                    time.sleep(sleep_for)
                     continue
+                idle_since = time.monotonic()
                 self.run_task(task)
+                idle_since = time.monotonic()
         finally:
             os.close(fd)
 
@@ -114,6 +130,9 @@ class NodeRunner:
         task_data["task_type"] = task["task_type"]
         task_data["app_name"] = task["app_name"]
         task_data["project_root"] = task_data.get("project_root") or str(self.work_root / self._repo_name(task_data.get("repo", ""), task["app_name"]))
+
+        if self.preflight_issue_deleted_cleanup(task, task_dir):
+            return
 
         self.queue.update(task_id, state="starting")
         self._write_local_state(task_dir, task_id, "starting", task)
@@ -136,19 +155,174 @@ class NodeRunner:
             }
             (task_dir / "runner-exception.txt").write_text(str(exc), encoding="utf-8")
         result_path = task_dir / "result.json"
-        if not result_path.exists():
-            result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         artifact_dir = task_dir / "artifacts"
+        archive_path = self._archive_path(task, result)
+        result["archive_path"] = str(archive_path)
+        # Always rewrite result.json after adding archive_path so Multica metadata,
+        # local task files and archive copy all carry the same stable path.
+        result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        archive_error = ""
+        try:
+            self.archive_task(task, result, task_dir, archive_path)
+        except Exception as exc:
+            archive_error = str(exc)
+            result["archive_path"] = ""
+            result["archive_error"] = archive_error
+            (task_dir / "archive-error.txt").write_text(archive_error, encoding="utf-8")
+            result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         self.queue.mark_result_ready(
             task_id,
             result_path=str(result_path),
             artifact_dir=str(artifact_dir),
+            archive_path=str(archive_path) if not archive_error else "",
             exit_code=result.get("exit_code"),
             state="result_ready" if result.get("status") in {"done", "failed", "blocked"} else "failed",
-            error=result.get("reason", "") if result.get("status") != "done" else "",
+            error=result.get("reason", "") if result.get("status") != "done" else archive_error,
         )
         self._write_local_state(task_dir, task_id, "result_ready", result)
         self.publish_result_ready(task, result, result_path, artifact_dir)
+
+
+    def _archive_path(self, task: Dict[str, Any], result: Dict[str, Any]) -> Path:
+        task_type = str(task.get("task_type") or result.get("task_type") or "TASK").upper()
+        task_id = str(task.get("id") or result.get("task_id") or "task")
+        issue_id = str(task.get("issue_id") or result.get("issue_id") or "no-issue")
+        root_issue_id = str(task.get("root_issue_id") or "no-root")
+        app_issue_id = str(task.get("app_issue_id") or "no-app-issue")
+        app_name = str(result.get("app") or task.get("app_name") or "app")
+        root_title = str(task.get("root_title") or task.get("root_issue_title") or "")
+
+        root_label = self._safe_path_part(f"{root_title}__{root_issue_id}" if root_title else f"root__{root_issue_id}")
+        app_label = self._safe_path_part(f"{app_name}__{app_issue_id}")
+        exec_label = self._safe_path_part(f"{task_type}__{issue_id}__{task_id}")
+        return self.archive_root / root_label / app_label / exec_label
+
+    def archive_task(self, task: Dict[str, Any], result: Dict[str, Any], task_dir: Path, archive_path: Path) -> Path:
+        """Copy this task's durable outputs to the human-readable archive tree.
+
+        The source/build/test workspace under ~/atut-work is intentionally not
+        moved.  Only the per-task result directory is copied so later test runs
+        can keep reusing the code checkout while finished logs/results remain
+        stable for audit and report regeneration.
+        """
+        archive_path.mkdir(parents=True, exist_ok=True)
+        for child in task_dir.iterdir():
+            if child.name == "archive-error.txt":
+                continue
+            dest = archive_path / child.name
+            if child.is_dir():
+                shutil.copytree(child, dest, dirs_exist_ok=True)
+            elif child.is_file():
+                shutil.copy2(child, dest)
+
+        manifest = {
+            "task_id": task.get("id", ""),
+            "issue_id": task.get("issue_id", ""),
+            "root_issue_id": task.get("root_issue_id", ""),
+            "app_issue_id": task.get("app_issue_id", ""),
+            "workspace_id": self._task_workspace_id(task),
+            "node_id": self.node_id,
+            "task_type": task.get("task_type", ""),
+            "app_name": task.get("app_name", ""),
+            "status": result.get("status", ""),
+            "exit_code": result.get("exit_code"),
+            "source_task_dir": str(task_dir),
+            "archive_path": str(archive_path),
+            "archived_at": now_iso(),
+        }
+        (archive_path / "archive-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        (archive_path / "README.md").write_text(self._archive_readme(manifest, result), encoding="utf-8")
+        return archive_path
+
+    def _archive_readme(self, manifest: Dict[str, Any], result: Dict[str, Any]) -> str:
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        lines = [
+            f"# {manifest.get('task_type')} {manifest.get('app_name')} 执行归档",
+            "",
+            f"- task_id: {manifest.get('task_id')}",
+            f"- issue_id: {manifest.get('issue_id')}",
+            f"- root_issue_id: {manifest.get('root_issue_id')}",
+            f"- app_issue_id: {manifest.get('app_issue_id')}",
+            f"- node_id: {manifest.get('node_id')}",
+            f"- status: {manifest.get('status')}",
+            f"- exit_code: {manifest.get('exit_code')}",
+            f"- archived_at: {manifest.get('archived_at')}",
+        ]
+        if metrics:
+            lines += [
+                "",
+                "## metrics",
+                f"- passed: {metrics.get('passed', '')}",
+                f"- total: {metrics.get('total', '')}",
+                f"- pass_rate: {metrics.get('pass_rate', '')}",
+                f"- line_coverage: {metrics.get('line_coverage', '')}",
+                f"- function_coverage: {metrics.get('function_coverage', '')}",
+            ]
+        if result.get("reason"):
+            lines += ["", "## reason", str(result.get("reason"))]
+        lines += ["", "说明：源码工作区仍保留在 ~/atut-work，本目录只保存本次任务结果、日志和产物快照。", ""]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _safe_path_part(value: str, max_len: int = 160) -> str:
+        text = re.sub(r"[\\/\0\r\n\t]+", "_", str(value).strip())
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"[^0-9A-Za-z._@=+\-\u4e00-\u9fff（）()【】\[\]]+", "_", text)
+        text = text.strip("._ ") or "unknown"
+        return text[:max_len]
+
+
+    def preflight_issue_deleted_cleanup(self, task: Dict[str, Any], task_dir: Path) -> bool:
+        """Return True if the task was orphaned/deleted before execution.
+
+        The worker claims queued tasks before it starts expensive source/build/test
+        work.  If the Multica root/current issue was deleted while the task was
+        queued, running it is wasteful and may publish stale results.  In that
+        case keep an audit tombstone under the task directory and remove the row
+        from the local queue DB.
+        """
+        task_id = task.get("id", "")
+        issue_id = task.get("issue_id", "")
+        root_issue_id = task.get("root_issue_id") or ""
+        workspace_id = self._task_workspace_id(task)
+        multica = self._multica_for_workspace(workspace_id)
+
+        def orphan(filename: str, reason: str, error: str) -> bool:
+            tombstone = {
+                "task_id": task_id,
+                "issue_id": issue_id,
+                "root_issue_id": root_issue_id,
+                "workspace_id": workspace_id,
+                "state": "orphaned",
+                "reason": reason,
+                "error": error,
+                "updated_at": now_iso(),
+            }
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / filename).write_text(json.dumps(tombstone, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.queue.mark_orphaned(task_id, reason)
+            self.queue.delete(task_id)
+            self._write_local_state(task_dir, task_id, "orphaned", tombstone)
+            return True
+
+        try:
+            if root_issue_id:
+                multica.issue_get(root_issue_id)
+        except Exception as exc:
+            if MulticaClient.is_not_found_error(exc):
+                return orphan("orphaned-root-issue-deleted.json", "root-issue-not-found-or-deleted", str(exc))
+            (task_dir / "issue-preflight-warning.txt").write_text(str(exc), encoding="utf-8")
+            return False
+
+        try:
+            if issue_id:
+                multica.issue_get(issue_id)
+        except Exception as exc:
+            if MulticaClient.is_not_found_error(exc):
+                return orphan("orphaned-issue-deleted.json", "issue-not-found-or-deleted", str(exc))
+            (task_dir / "issue-preflight-warning.txt").write_text(str(exc), encoding="utf-8")
+            return False
+        return False
 
     def publish_result_ready(self, task: Dict[str, Any], result: Dict[str, Any], result_path: Path, artifact_dir: Path) -> None:
         issue_id = task["issue_id"]
@@ -166,10 +340,22 @@ class NodeRunner:
             multica.metadata_set(issue_id, "utat.result_json", json.dumps(result, ensure_ascii=False), value_type="string")
             multica.metadata_set(issue_id, "utat.artifact_dir", str(artifact_dir), value_type="string")
             multica.metadata_set(issue_id, "utat.result_path", str(result_path), value_type="string")
+            if result.get("archive_path"):
+                multica.metadata_set(issue_id, "utat.archive_path", str(result.get("archive_path")), value_type="string")
             multica.metadata_set(issue_id, "utat.node", self.node_id, value_type="string")
             if workspace_id:
                 multica.metadata_set(issue_id, "utat.workspace_id", workspace_id, value_type="string")
-            multica.issue_rerun(issue_id)
+
+            # 回调不要依赖 issue assignee/rerun。rerun 要求 issue 已分派给 agent/squad，
+            # 一旦子 issue 未 assign 就会卡在 result_ready。固定在当前 AT/UT issue
+            # 评论 mention 对应角色，由 Multica mention 触发 agent 回收结果。
+            callback_attachments = [p for p in result.get("artifacts") or [] if Path(str(p)).exists()]
+            multica.comment_add(
+                issue_id,
+                self._result_ready_comment(task, result, result_path, artifact_dir),
+                attachments=callback_attachments,
+                temp_dir=self.tasks_dir / task["id"],
+            )
             callback_error.unlink(missing_ok=True)
         except Exception as exc:
             if MulticaClient.is_not_found_error(exc):
@@ -190,6 +376,42 @@ class NodeRunner:
                 callback_error.unlink(missing_ok=True)
                 return
             callback_error.write_text(str(exc), encoding="utf-8")
+
+    def _callback_agent(self, task: Dict[str, Any]) -> tuple[str, str]:
+        task_type = str(task.get("task_type") or "").upper()
+        try:
+            payload = json.loads(task.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        callback = payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
+        by_type = callback.get(task_type) if isinstance(callback.get(task_type), dict) else {}
+        cfg = self.config.get("callback") or {}
+        cfg_by_type = cfg.get(task_type) if isinstance(cfg.get(task_type), dict) else {}
+        agent_id = str(by_type.get("agent_id") or callback.get("agent_id") or cfg_by_type.get("agent_id") or "").strip()
+        agent_name = str(by_type.get("agent_name") or callback.get("agent_name") or cfg_by_type.get("agent_name") or "").strip()
+        return agent_id, agent_name
+
+    def _result_ready_comment(self, task: Dict[str, Any], result: Dict[str, Any], result_path: Path, artifact_dir: Path) -> str:
+        task_type = str(task.get("task_type") or "").upper()
+        agent_id, agent_name = self._callback_agent(task)
+        mention = f"[@{agent_name}](mention://agent/{agent_id})" if agent_id and agent_name else ""
+        metric_lines = ut_result_metric_lines(result) if task_type == "UT" else []
+        return "\n".join([
+            f"【utat-node 回调】{task_type} 本地执行完成，结果已写入 metadata。",
+            "",
+            f"- task_id: {task.get('id', '')}",
+            f"- task_type: {task_type}",
+            f"- app: {result.get('app') or task.get('app_name') or ''}",
+            f"- status: {result.get('status', '')}",
+            f"- exit_code: {result.get('exit_code', '')}",
+            *metric_lines,
+            f"- result_path: {result_path}",
+            f"- artifact_dir: {artifact_dir}",
+            f"- archive_path: {result.get('archive_path', '')}",
+            "",
+            "请回收 result_ready，上传/登记产物并在本 issue 写最终结果；完成后再 mention 队长推进。",
+            mention,
+        ]).strip() + "\n"
 
     def _task_workspace_id(self, task: Dict[str, Any]) -> str:
         try:

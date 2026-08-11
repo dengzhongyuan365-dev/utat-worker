@@ -27,7 +27,15 @@ def _runner(args: argparse.Namespace) -> NodeRunner:
 
 def cmd_init(args: argparse.Namespace) -> None:
     runner = _runner(args)
-    print(json.dumps({"node_id": runner.node_id, "home": str(runner.home), "db": str(runner.queue.path)}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "node_id": runner.node_id,
+        "home": str(runner.home),
+        "db": str(runner.queue.path),
+        "work_root": str(runner.work_root),
+        "archive_root": str(runner.archive_root),
+        "poll_interval_sec": runner.poll_interval,
+        "idle_exit_sec": runner.idle_exit_sec,
+    }, ensure_ascii=False, indent=2))
 
 
 def cmd_submit(args: argparse.Namespace) -> None:

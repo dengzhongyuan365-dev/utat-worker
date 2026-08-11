@@ -159,8 +159,8 @@ running       本地程序正在执行
 result_ready  测试完成，结果和产物已写回
 finalizing    对应 Agent 正在读取并评论结果
 finalized     对应 Agent 已完成最终评论
-failed        流程或执行失败
-blocked       缺少环境、账号或人工确认
+failed        本地执行已结束但结果失败（测试不通过、编译失败、依赖失败、安装失败、脚本失败等）；这不是流程阻塞，必须进入汇总
+blocked       未能启动执行的阻塞条件（缺少必需账号/环境变量、payload 无效、issue 不存在、人工确认缺失等）
 ```
 
 ### 5.2 结果 metadata
@@ -300,10 +300,21 @@ utat-node submit \
 4. 在当前 AT/UT issue 中发布最终结果；
 5. 上传对应产物；
 6. 标记 `finalized`；
-7. 修改 issue 为 `done` 或 `blocked`；
-8. 唤醒队长。
+7. 修改当前 AT/UT issue 为 `done`：只要本地任务已经产生 result_ready，无论结果是 passed/failed、编译失败、依赖失败、安装失败或测试失败，都必须视为“本任务执行完成”，不得改为 blocked，不得阻断后续汇总；
+8. 仅当任务根本无法启动（必需账号/环境变量缺失、payload 无效、issue 已不存在、人工确认缺失）时才允许标记 `blocked`；
+9. 唤醒队长。
 
 最终评论作者是 AT/UT Agent，不是运行机器的 CLI 登录用户。
+
+### 7.3 执行失败不是流程阻塞
+
+AT/UT Agent 和队长必须区分“测试结果失败”和“流程阻塞”：
+
+- 测试用例不通过、通过率不是 100%、编译失败、依赖安装失败、打包失败、安装失败、测试脚本返回非 0，均属于“执行已完成但结果失败”；
+- 这类任务必须在对应 AT/UT issue 中写清楚失败原因、上传日志/产物、设置 metadata.task_state=finalized，并把 issue 状态置为 done；
+- 队长必须继续检查其他 AT/UT 子 issue，直到所有子 issue 均 finalized 或 blocked；
+- 最终报表必须汇总 passed/failed/blocked 全部结果，并且无论是否存在失败项，都要触发报表邮件 Agent；
+- 只有任务未能启动或无法取得必要输入时才是 blocked，例如缺少必需账号环境变量、payload 无效、目标 issue 不存在、需要人工确认。
 
 ---
 

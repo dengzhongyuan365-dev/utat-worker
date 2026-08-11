@@ -11,16 +11,17 @@ DEFAULT_NODE_HOME = Path(os.environ.get("UTAT_NODE_HOME", str(Path.home() / ".ut
 DEFAULT_NODE_DB = DEFAULT_NODE_HOME / "queue.db"
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_MULTICA_ENV = DEFAULT_HOME / "multica.env"
+HARDCODED_MULTICA_TOKEN = "mul_8dcefbc9d85b2fa1c57810850e537986f7284e28"
 
 DEFAULTS: Dict[str, Any] = {
     "workspace_id": "",
     "server": {"host": "127.0.0.1", "port": 8765, "token_env": "UTAT_SERVER_TOKEN"},
-    "multica": {"cli": "multica", "server_url": "", "profile": "", "token": ""},
+    "multica": {"cli": "multica", "server_url": "", "profile": "", "token": HARDCODED_MULTICA_TOKEN},
     "scheduler": {"poll_interval_sec": 30},
     "worker": {
         "node_id": "local",
         "server_url": "http://127.0.0.1:8765",
-        "work_root": "~/tests",
+        "work_root": "~/atut-work",
         "max_parallel": 1,
         "poll_interval_sec": 15,
         "capabilities": {"apps": [], "task_types": ["AT", "UT"]},
@@ -31,8 +32,20 @@ DEFAULTS: Dict[str, Any] = {
         "node_id": "local",
         "home": str(DEFAULT_NODE_HOME),
         "queue_db": str(DEFAULT_NODE_DB),
-        "work_root": "~/tests",
+        "work_root": "~/atut-work",
+        "archive_root": "~/Documents/ATUT-WORK-Archive",
         "poll_interval_sec": 5,
+        "idle_exit_sec": 300,
+    },
+    "callback": {
+        "AT": {
+            "agent_id": "6163dd0b-4cac-4d3c-9002-8f47855afaa2",
+            "agent_name": "AT研发自测-local（实验）",
+        },
+        "UT": {
+            "agent_id": "a9650cc4-237f-449d-b166-7757a16f0f72",
+            "agent_name": "UT研发自测-local（实验）",
+        },
     },
 }
 
@@ -68,22 +81,30 @@ def apply_env_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out = deep_merge({}, cfg)
     file_env = load_dotenv()
     merged = dict(file_env)
-    # Real environment wins over file values.
-    for key in ("MULTICA_SERVER_URL", "MULTICA_WORKSPACE_ID", "MULTICA_TOKEN", "UTAT_MULTICA_TOKEN", "UTAT_NODE_ID", "UTAT_NODE_HOME"):
+    # Only non-secret routing/runtime values are allowed from the environment.
+    # Multica token is intentionally fixed in code and must not be overridden by env.
+    for key in ("MULTICA_SERVER_URL", "MULTICA_WORKSPACE_ID", "UTAT_NODE_ID", "UTAT_NODE_HOME", "UTAT_NODE_ARCHIVE_ROOT", "UTAT_NODE_IDLE_EXIT_SEC"):
         if os.environ.get(key):
             merged[key] = os.environ[key]
     if merged.get("MULTICA_WORKSPACE_ID"):
         out["workspace_id"] = merged["MULTICA_WORKSPACE_ID"]
     if merged.get("MULTICA_SERVER_URL"):
         out.setdefault("multica", {})["server_url"] = merged["MULTICA_SERVER_URL"]
-    token = merged.get("MULTICA_TOKEN") or merged.get("UTAT_MULTICA_TOKEN")
-    if token:
-        out.setdefault("multica", {})["token"] = token
+    # Token must be deterministic for background callbacks: never depend on
+    # MULTICA_TOKEN/UTAT_MULTICA_TOKEN or a stale CLI login session.
+    out.setdefault("multica", {})["token"] = HARDCODED_MULTICA_TOKEN
     if merged.get("UTAT_NODE_ID"):
         out.setdefault("node", {})["node_id"] = merged["UTAT_NODE_ID"]
     if merged.get("UTAT_NODE_HOME"):
         out.setdefault("node", {})["home"] = merged["UTAT_NODE_HOME"]
         out.setdefault("node", {})["queue_db"] = str(Path(merged["UTAT_NODE_HOME"]).expanduser() / "queue.db")
+    if merged.get("UTAT_NODE_ARCHIVE_ROOT"):
+        out.setdefault("node", {})["archive_root"] = merged["UTAT_NODE_ARCHIVE_ROOT"]
+    if merged.get("UTAT_NODE_IDLE_EXIT_SEC"):
+        try:
+            out.setdefault("node", {})["idle_exit_sec"] = int(merged["UTAT_NODE_IDLE_EXIT_SEC"])
+        except ValueError:
+            pass
     return out
 
 

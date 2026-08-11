@@ -16,8 +16,8 @@ def test_normalize_structured_payload_and_resolve_env(monkeypatch):
             "schema": "utat-task/v1",
             "issue": {"id": "at-1", "root_id": "root-1", "app_id": "app-1"},
             "task": {"type": "AT", "app_name": "deepin-mail", "node_id": "local"},
-            "source": {"repo": "https://example.invalid/mail.git", "branch": "develop", "project_root": "~/tests/deepin-mail"},
-            "test": {"suite": "login", "spec_ids": ["1", "2"], "at_path": "~/tests/deepin-mail/at"},
+            "source": {"repo": "https://example.invalid/mail.git", "branch": "develop", "project_root": "~/atut-work/deepin-mail"},
+            "test": {"suite": "login", "spec_ids": ["1", "2"], "at_path": "~/atut-work/deepin-mail/at"},
             "environment": {"MAIL_AT_ACCOUNT": "${MAIL_ACCOUNT}"},
         }
     )

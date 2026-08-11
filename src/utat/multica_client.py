@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .config import HARDCODED_MULTICA_TOKEN
+
 
 class MulticaError(RuntimeError):
     pass
@@ -18,7 +20,9 @@ class MulticaClient:
         self.cli = cli
         self.server_url = server_url
         self.profile = profile
-        self.token = token
+        # Background callbacks must always use the code-pinned token.
+        # Do not trust environment variables, config token overrides, or stale CLI login state.
+        self.token = HARDCODED_MULTICA_TOKEN
 
     def _base(self) -> List[str]:
         cmd = [self.cli]
@@ -30,18 +34,48 @@ class MulticaClient:
             cmd += ["--profile", self.profile]
         return cmd
 
-    def run(self, args: List[str], *, input_text: str | None = None, timeout: int = 60, check: bool = True) -> subprocess.CompletedProcess:
+    def run(self, args: List[str], *, input_text: str | None = None, timeout: int = 60, check: bool = True, cwd: str | Path | None = None) -> subprocess.CompletedProcess:
+        env = self._env()
+        p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env, cwd=str(cwd) if cwd is not None else None)
+        if self.token and self._is_auth_error(p):
+            self._login_with_token(env=env, cwd=cwd)
+            p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env, cwd=str(cwd) if cwd is not None else None)
+        if check and p.returncode != 0:
+            raise MulticaError(f"multica {' '.join(args)} failed rc={p.returncode}: {p.stderr.strip()}")
+        return p
+
+    def _env(self) -> Dict[str, str]:
         env = os.environ.copy()
+        # Remove token values inherited from the shell so callbacks cannot depend
+        # on, or be broken by, external MULTICA_TOKEN/UTAT_MULTICA_TOKEN settings.
+        env.pop("MULTICA_TOKEN", None)
+        env.pop("UTAT_MULTICA_TOKEN", None)
         if self.workspace_id:
             env["MULTICA_WORKSPACE_ID"] = self.workspace_id
         if self.server_url:
             env["MULTICA_SERVER_URL"] = self.server_url
-        if self.token:
-            env["MULTICA_TOKEN"] = self.token
-        p = subprocess.run(self._base() + args, input=input_text, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env)
-        if check and p.returncode != 0:
-            raise MulticaError(f"multica {' '.join(args)} failed rc={p.returncode}: {p.stderr.strip()}")
-        return p
+        # Intentionally do not export MULTICA_TOKEN. Authentication is refreshed
+        # through `multica login --token <code-pinned-token>` when needed.
+        return env
+
+    @staticmethod
+    def _is_auth_error(p: subprocess.CompletedProcess) -> bool:
+        if p.returncode == 0:
+            return False
+        text = f"{p.stdout or ''}\n{p.stderr or ''}"
+        return "登录已过期" in text or "尚未登录" in text or "Authenticate" in text or "not logged" in text.lower()
+
+    def _login_with_token(self, *, env: Dict[str, str], cwd: str | Path | None = None) -> None:
+        # Refresh the local CLI session with the code-pinned token, then retry.
+        login_cmd = [self.cli]
+        if self.server_url:
+            login_cmd += ["--server-url", self.server_url]
+        if self.profile:
+            login_cmd += ["--profile", self.profile]
+        login_cmd += ["login", "--token", self.token]
+        p = subprocess.run(login_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, env=env, cwd=str(cwd) if cwd is not None else None)
+        if p.returncode != 0:
+            raise MulticaError(f"multica login --token failed rc={p.returncode}: {p.stderr.strip()}")
 
     def json(self, args: List[str], **kw: Any) -> Any:
         p = self.run(args + ["--output", "json"], **kw)
@@ -109,15 +143,25 @@ class MulticaClient:
     def issue_rerun(self, issue_id: str) -> Any:
         return self.json(["issue", "rerun", issue_id], timeout=60)
 
-    def comment_add(self, issue_id: str, content: str, attachments: Iterable[str] = ()) -> Dict[str, Any]:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+    def comment_add(self, issue_id: str, content: str, attachments: Iterable[str] = (), *, temp_dir: str | Path | None = None) -> Dict[str, Any]:
+        tmp_dir = Path(temp_dir).expanduser() if temp_dir else Path.cwd()
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(tmp_dir)) as f:
             f.write(content)
-            content_path = f.name
+            content_path = Path(f.name)
         try:
-            args = ["issue", "comment", "add", issue_id, "--content-file", content_path]
+            args = ["issue", "comment", "add", issue_id, "--content-file", content_path.name]
             for a in attachments:
-                if a and Path(a).exists():
-                    args += ["--attachment", str(a)]
-            return self.json(args, timeout=300)
+                if not a:
+                    continue
+                ap = Path(a)
+                if not ap.exists():
+                    continue
+                try:
+                    rel = ap.resolve().relative_to(tmp_dir.resolve())
+                    args += ["--attachment", str(rel)]
+                except Exception:
+                    args += ["--attachment", str(ap)]
+            return self.json(args, timeout=300, cwd=tmp_dir)
         finally:
-            Path(content_path).unlink(missing_ok=True)
+            content_path.unlink(missing_ok=True)

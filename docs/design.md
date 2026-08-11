@@ -583,7 +583,7 @@ flowchart TD
 每个执行任务在本机写：
 
 ```text
-~/tests/.utat/tasks/<issue-id>/
+~/atut-work/.utat/tasks/<issue-id>/
 ├── task.json
 ├── state.json
 ├── pid
@@ -612,7 +612,7 @@ flowchart TD
   "pid": 332925,
   "start_time": "2026-08-07T23:54:35+08:00",
   "last_log_time": "2026-08-08T03:59:43+08:00",
-  "log_path": "/home/uos/tests/.../ut-run.log",
+  "log_path": "/home/uos/atut-work/.../ut-run.log",
   "exit_code": null
 }
 ```
@@ -737,18 +737,25 @@ UT 最终评论格式：
 
 ```text
 [UT_FINAL_RESULT]
-应用：deepin-mail
-状态：failed
-通过数：<pass>
-失败数：<fail>
+应用：<app>
+状态：<done|failed|blocked>
+原因：<reason>
+退出码：<exit_code>
+执行 issue：https://agent-dev.uniontech.com/v25/issues/<ut-issue-id>
+metric_source：<gtest-xml|suite-summary|gtest-log-summary|none>
 总数：<total>
-通过率：<rate>
+通过数：<passed>
+失败数：<failed>
+失败用例数：<failed_cases>
+异常套件数：<crashed>
+通过率：<pass_rate>
 行覆盖率：<line-rate>
 函数覆盖率：<function-rate>
-执行 issue：https://agent-dev.uniontech.com/v25/issues/<ut-issue-id>
-日志附件：ut-run.log
-覆盖率附件：coverage-html.tar.gz
-失败摘要：详见附件
+附件：
+- ut-run.log
+- ut-workflow.log
+- coverage-html.tar.gz
+说明：UT 结果只认固定字段，不再把 None 写入评论。
 ```
 
 AT 最终评论格式：
@@ -780,6 +787,8 @@ AT 状态：done/failed
 UT 状态：done/failed
 AT 通过率：xx%
 UT 通过率：xx%
+UT 失败用例数：xx
+UT 异常套件数：xx
 ```
 
 ### 10.3 总入口 issue 报表
@@ -889,7 +898,7 @@ worker 主动领取适合自己的任务
 nodes:
   node-a:
     max_parallel: 1
-    work_root: /home/uos/tests
+    work_root: /home/uos/atut-work
     apps:
       - deepin-mail
       - dde-file-manager
@@ -899,7 +908,7 @@ nodes:
 
   node-b:
     max_parallel: 1
-    work_root: /home/uos/tests
+    work_root: /home/uos/atut-work
     apps:
       - deepin-editor
       - deepin-reader
@@ -1052,7 +1061,7 @@ apt-get source
 统一：
 
 ```text
-~/tests/<repo-name>
+~/atut-work/<repo-name>
 ```
 
 用户指定已有目录且不更新代码：

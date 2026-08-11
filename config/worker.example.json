@@ -1,16 +1,39 @@
 {
   "workspace_id": "b982c611-c032-4874-ac62-0f66ae001f2f",
-  "server": {"host": "127.0.0.1", "port": 8765, "token_env": "UTAT_SERVER_TOKEN"},
-  "multica": {"cli": "multica", "server_url": "", "profile": ""},
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "token_env": "UTAT_SERVER_TOKEN"
+  },
+  "multica": {
+    "cli": "multica",
+    "server_url": "",
+    "profile": ""
+  },
   "worker": {
     "node_id": "node-a",
     "server_url": "http://<orchestrator-host>:8765",
-    "work_root": "~/tests",
+    "work_root": "~/atut-work",
     "max_parallel": 1,
     "poll_interval_sec": 15,
     "capabilities": {
-      "apps": ["deepin-mail", "dde-file-manager"],
-      "task_types": ["AT", "UT"]
+      "apps": [
+        "deepin-mail",
+        "dde-file-manager"
+      ],
+      "task_types": [
+        "AT",
+        "UT"
+      ]
     }
+  },
+  "node": {
+    "node_id": "local",
+    "home": "~/.utat-node",
+    "queue_db": "~/.utat-node/queue.db",
+    "work_root": "~/atut-work",
+    "archive_root": "~/Documents/ATUT-WORK-Archive",
+    "poll_interval_sec": 5,
+    "idle_exit_sec": 300
   }
 }

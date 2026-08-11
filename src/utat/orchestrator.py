@@ -58,8 +58,8 @@ class Orchestrator:
                     created.append({"type": typ, "id": ex.get("id"), "title": exec_title})
                 issue_id = ex.get("id") if ex else ""
                 if issue_id:
-                    project_root = f"~/tests/{self._repo_name(spec.repo) or spec.app_name}"
-                    script = "local-test.sh" if typ == "UT" else ""
+                    project_root = f"~/atut-work/{self._repo_name(spec.repo) or spec.app_name}"
+                    script = "test-prj-running.sh" if typ == "UT" else ""
                     self.db.upsert_exec(root_issue_id=root_issue_id, app_task_id=app_task_id, app_issue_id=app_issue_id, issue_id=issue_id, task_type=typ, app_name=spec.app_name, repo=spec.repo, branch=spec.branch, project_root=project_root, validation_mode=spec.validation_mode, test_scope=spec.test_scope, test_script=script, preferred_nodes=preferred, status="waiting")
                 plan.append({"app": spec.app_name, "type": typ, "title": exec_title, "issue_id": issue_id, "preferred_nodes": preferred})
         return {"root_issue_id": root_issue_id, "title": title, "timestamp": timestamp, "apps": [s.__dict__ for s in specs], "created": created, "plan": plan}
@@ -90,7 +90,7 @@ class Orchestrator:
             f"应用：{spec.app_name}",
             f"REPO：{spec.repo}",
             f"BRANCH：{spec.branch}",
-            f"PROJECT_ROOT：~/tests/{self._repo_name(spec.repo) or spec.app_name}",
+            f"PROJECT_ROOT：~/atut-work/{self._repo_name(spec.repo) or spec.app_name}",
             f"VALIDATION_MODE：{spec.validation_mode}",
             "VERSION_SOURCE：latest",
             "NO_CODE_UPDATE：false",
@@ -101,5 +101,5 @@ class Orchestrator:
             "本 issue 由 utat-worker 执行，不依赖 Multica Agent 长会话。",
         ]
         if typ == "UT":
-            lines.insert(7, "TEST_SCRIPT：local-test.sh")
+            lines.insert(7, "TEST_SCRIPT：test-prj-running.sh")
         return "\n".join(lines)

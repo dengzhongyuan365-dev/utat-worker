@@ -51,6 +51,7 @@ class NodeQueue:
               log_path TEXT,
               result_path TEXT,
               artifact_dir TEXT,
+              archive_path TEXT,
               error TEXT,
               submitted_at TEXT NOT NULL,
               started_at TEXT,
@@ -63,6 +64,7 @@ class NodeQueue:
             """
         )
         self._ensure_column("workspace_id", "TEXT")
+        self._ensure_column("archive_path", "TEXT")
 
     def _ensure_column(self, name: str, definition: str) -> None:
         cols = {row[1] for row in self.conn.execute("PRAGMA table_info(node_tasks)").fetchall()}
@@ -151,9 +153,20 @@ class NodeQueue:
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             row = self.conn.execute(
-                """SELECT * FROM node_tasks
-                   WHERE node_id=? AND state='queued'
-                   ORDER BY submitted_at, rowid LIMIT 1""",
+                """SELECT * FROM node_tasks AS q
+                   WHERE q.node_id=? AND q.state='queued'
+                     AND NOT (
+                       q.task_type='UT'
+                       AND EXISTS (
+                         SELECT 1 FROM node_tasks AS at
+                         WHERE at.node_id=q.node_id
+                           AND at.root_issue_id=q.root_issue_id
+                           AND at.app_issue_id=q.app_issue_id
+                           AND at.task_type='AT'
+                           AND at.state IN ('queued','starting','running')
+                       )
+                     )
+                   ORDER BY q.submitted_at, q.rowid LIMIT 1""",
                 (node_id,),
             ).fetchone()
             if not row:
@@ -197,12 +210,14 @@ class NodeQueue:
         exit_code: int | None,
         state: str = "result_ready",
         error: str = "",
+        archive_path: str = "",
     ) -> None:
         self.update(
             task_id,
             state=state,
             result_path=result_path,
             artifact_dir=artifact_dir,
+            archive_path=archive_path,
             exit_code=exit_code,
             error=error,
             finished_at=now_iso(),
