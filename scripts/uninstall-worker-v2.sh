@@ -23,10 +23,10 @@ KEEP_DATA="${KEEP_DATA:-0}"
 say() { printf '[utat-worker-v2] %s\n' "$*"; }
 
 say "stop local V2 worker/web processes if any"
-pkill -f 'utat_worker_v2.cli worker' >/dev/null 2>&1 || true
-pkill -f 'utat_worker_v2.cli serve' >/dev/null 2>&1 || true
-pkill -f 'utat-worker-v2-worker' >/dev/null 2>&1 || true
-pkill -f 'utat-worker-v2-web' >/dev/null 2>&1 || true
+pkill -f '[u]tat_worker_v2.cli worker' >/dev/null 2>&1 || true
+pkill -f '[u]tat_worker_v2.cli serve' >/dev/null 2>&1 || true
+pkill -f '[u]tat-worker-v2-worker' >/dev/null 2>&1 || true
+pkill -f '[u]tat-worker-v2-web' >/dev/null 2>&1 || true
 
 say "remove command wrappers"
 rm -f "$BIN_DIR/utat-worker-v2" "$BIN_DIR/utat-worker-v2-worker" "$BIN_DIR/utat-worker-v2-web"

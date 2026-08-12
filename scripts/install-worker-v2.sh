@@ -57,10 +57,10 @@ if [ "$INSTALL_MULTICA" = "1" ]; then
 fi
 
 say "stop existing V2 worker/web processes if any"
-pkill -f 'utat_worker_v2.cli worker' >/dev/null 2>&1 || true
-pkill -f 'utat_worker_v2.cli serve' >/dev/null 2>&1 || true
-pkill -f 'utat-worker-v2-worker' >/dev/null 2>&1 || true
-pkill -f 'utat-worker-v2-web' >/dev/null 2>&1 || true
+pkill -f '[u]tat_worker_v2.cli worker' >/dev/null 2>&1 || true
+pkill -f '[u]tat_worker_v2.cli serve' >/dev/null 2>&1 || true
+pkill -f '[u]tat-worker-v2-worker' >/dev/null 2>&1 || true
+pkill -f '[u]tat-worker-v2-web' >/dev/null 2>&1 || true
 
 if [ "$INSTALL_MULTICA" = "1" ] && ! command -v multica >/dev/null 2>&1; then
   say "install multica cli"
