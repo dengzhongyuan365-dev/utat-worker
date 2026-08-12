@@ -206,3 +206,80 @@ node-build：deepin-editor UT（运行中）
 - 多节点并发执行
 - result_ready 后通过 issue rerun 唤醒对应 AT/UT Agent
 - 同一应用 AT→UT 顺序约束
+
+## V2 一键安装 / 卸载
+
+V2 安装脚本用于新的 `AT/UT-研发自测-local` 流程。安装会同步代码、重建 venv、写入永久环境变量，并生成命令入口。
+
+### 一键安装
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/install-worker-v2.sh)"
+```
+
+默认行为：
+
+- 仓库同步到 `~/WorkSpace/utat-worker`；如果本机已有源码且只想本地验证，可设置 `SKIP_REPO_FETCH=1`；
+- 每次安装都会 `git reset --hard origin/master && git clean -fdx`，保证源码是远端最新干净版本；
+- 每次安装都会重建 `~/.utat-worker-v2/venv`；
+- 默认清理 V2 队列状态 `~/.utat-node-v2`，避免旧任务影响新验证；
+- 默认清理源码工作区 `~/atut-work`，保证执行代码环境干净；
+- 默认保留归档目录 `~/Documents/ATUT-WORK-Archive`；如需连历史归档一起清理，设置 `FRESH_ARCHIVE=1` 或 `FRESH_DATA=1`；
+- 环境变量写入 `~/.config/utat-worker-v2/env`，并在 `~/.bashrc` 增加受控 block，打开新 shell 后永久生效；
+- 命令入口写入 `~/.local/bin`；
+- 如果本机缺少 `multica` CLI，默认会执行 `https://agentapi-dev.uniontech.com/downloads/install.sh` 安装，并执行 `multica setup self-host`。
+
+可选参数示例：
+
+```bash
+NODE_ID=local \
+WEB_PORT=8766 \
+FRESH_WORK=1 \
+FRESH_ARCHIVE=0 \
+INSTALL_MULTICA=1 \
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/install-worker-v2.sh)"
+```
+
+安装后可用命令：
+
+```bash
+utat-worker-v2 status
+utat-worker-v2 submit --payload-file payload.json
+utat-worker-v2 submit --payload-file payload.json --rerun
+utat-worker-v2-worker
+utat-worker-v2-web
+```
+
+Web 进度页：
+
+```text
+http://<机器IP>:8766/
+http://<机器IP>:8766/api/status
+```
+
+如果当前 shell 还找不到命令，执行：
+
+```bash
+source ~/.bashrc
+```
+
+### 一键卸载
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/uninstall-worker-v2.sh)"
+```
+
+默认行为：
+
+- 停止本机 V2 worker/web 进程；
+- 删除 `~/.local/bin/utat-worker-v2*` 命令；
+- 删除 `~/.bashrc` 中的 V2 环境变量 block；
+- 删除 `~/.utat-worker-v2`、`~/.config/utat-worker-v2`；
+- 删除 `~/.utat-node-v2`、`~/atut-work`、`~/Documents/ATUT-WORK-Archive`；
+- 删除 `~/WorkSpace/utat-worker`。
+
+如果想保留源码或数据：
+
+```bash
+KEEP_SOURCE=1 KEEP_DATA=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/uninstall-worker-v2.sh)"
+```

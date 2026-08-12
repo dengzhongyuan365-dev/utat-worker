@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# AT/UT worker V2 one-key installer.
+# Usage:
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/install-worker-v2.sh)"
+# Optional env:
+#   REPO_URL=https://github.com/dengzhongyuan365-dev/utat-worker.git
+#   BRANCH=master
+#   INSTALL_DIR=$HOME/WorkSpace/utat-worker
+#   NODE_ID=local
+#   WORKSPACE_ID=b982c611-c032-4874-ac62-0f66ae001f2f
+#   WEB_PORT=8766
+#   FRESH_SOURCE=1   # default: clean checkout/reset source tree
+#   SKIP_REPO_FETCH=0 # set 1 when INSTALL_DIR already contains current source
+#   FRESH_STATE=1    # default: clear V2 queue db for a fresh install
+#   FRESH_WORK=1     # default: clear ~/atut-work code workspace
+#   FRESH_ARCHIVE=0  # default: keep historical archive
+
+REPO_URL="${REPO_URL:-https://github.com/dengzhongyuan365-dev/utat-worker.git}"
+BRANCH="${BRANCH:-master}"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/WorkSpace/utat-worker}"
+V2_HOME="${UTAT_V2_HOME:-$HOME/.utat-worker-v2}"
+VENV_DIR="$V2_HOME/venv"
+STATE_HOME="${UTAT_V2_STATE_HOME:-$HOME/.utat-node-v2}"
+WORK_ROOT="${UTAT_WORK_ROOT:-$HOME/atut-work}"
+ARCHIVE_ROOT="${UTAT_ARCHIVE_ROOT:-$HOME/Documents/ATUT-WORK-Archive}"
+NODE_ID="${NODE_ID:-${UTAT_V2_NODE_ID:-local}}"
+WORKSPACE_ID="${WORKSPACE_ID:-${UTAT_WORKSPACE_ID:-b982c611-c032-4874-ac62-0f66ae001f2f}}"
+WEB_HOST="${WEB_HOST:-${UTAT_V2_WEB_HOST:-0.0.0.0}}"
+WEB_PORT="${WEB_PORT:-${UTAT_V2_WEB_PORT:-8766}}"
+MULTICA_SERVER_URL="${MULTICA_SERVER_URL:-${UTAT_MULTICA_SERVER_URL:-https://agentapi-dev.uniontech.com}}"
+MULTICA_APP_URL="${MULTICA_APP_URL:-https://agent-dev.uniontech.com}"
+INSTALL_MULTICA="${INSTALL_MULTICA:-1}"
+FRESH_SOURCE="${FRESH_SOURCE:-1}"
+SKIP_REPO_FETCH="${SKIP_REPO_FETCH:-0}"
+FRESH_STATE="${FRESH_STATE:-1}"
+FRESH_WORK="${FRESH_WORK:-1}"
+FRESH_ARCHIVE="${FRESH_ARCHIVE:-0}"
+FRESH_DATA="${FRESH_DATA:-0}"
+if [ "$FRESH_DATA" = "1" ]; then
+  FRESH_WORK=1
+  FRESH_ARCHIVE=1
+fi
+PROFILE_FILE="${PROFILE_FILE:-$HOME/.bashrc}"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/utat-worker-v2"
+ENV_FILE="$CONFIG_DIR/env"
+
+say() { printf '[utat-worker-v2] %s\n' "$*"; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2; exit 2; }; }
+
+need_cmd git
+need_cmd python3
+if [ "$INSTALL_MULTICA" = "1" ]; then
+  need_cmd curl
+fi
+
+say "stop existing V2 worker/web processes if any"
+pkill -f 'utat_worker_v2.cli worker' >/dev/null 2>&1 || true
+pkill -f 'utat_worker_v2.cli serve' >/dev/null 2>&1 || true
+pkill -f 'utat-worker-v2-worker' >/dev/null 2>&1 || true
+pkill -f 'utat-worker-v2-web' >/dev/null 2>&1 || true
+
+if [ "$INSTALL_MULTICA" = "1" ] && ! command -v multica >/dev/null 2>&1; then
+  say "install multica cli"
+  curl -fsSL "$MULTICA_SERVER_URL/downloads/install.sh" | bash
+fi
+if command -v multica >/dev/null 2>&1; then
+  say "setup multica self-host"
+  multica setup self-host --server-url "$MULTICA_SERVER_URL" --app-url "$MULTICA_APP_URL" >/dev/null 2>&1 || true
+else
+  say "warning: multica cli not found; callback will fail until multica is installed"
+fi
+mkdir -p "$HOME/WorkSpace" "$V2_HOME" "$CONFIG_DIR" "$BIN_DIR" "$WORK_ROOT" "$ARCHIVE_ROOT"
+
+CLONE_URL="$REPO_URL"
+if [ -n "${GITHUB_TOKEN:-}" ] && [[ "$REPO_URL" == https://github.com/* ]]; then
+  CLONE_URL="${REPO_URL/https:\/\/github.com\//https:\/\/x-access-token:${GITHUB_TOKEN}@github.com\/}"
+fi
+
+if [ "$SKIP_REPO_FETCH" = "1" ]; then
+  say "skip source sync; use existing INSTALL_DIR=$INSTALL_DIR"
+else
+  say "sync source: $REPO_URL branch=$BRANCH -> $INSTALL_DIR"
+  if [ ! -d "$INSTALL_DIR/.git" ]; then
+    if [ "$FRESH_SOURCE" = "1" ]; then
+      rm -rf "$INSTALL_DIR"
+    fi
+    git clone --branch "$BRANCH" "$CLONE_URL" "$INSTALL_DIR"
+  else
+    git -C "$INSTALL_DIR" remote set-url origin "$CLONE_URL" >/dev/null 2>&1 || true
+    git -C "$INSTALL_DIR" fetch origin "$BRANCH"
+    if [ "$FRESH_SOURCE" = "1" ]; then
+      git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
+      git -C "$INSTALL_DIR" clean -fdx
+    else
+      git -C "$INSTALL_DIR" checkout "$BRANCH"
+      git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
+    fi
+  fi
+fi
+
+if [ ! -f "$INSTALL_DIR/V2/utat_worker_v2/cli.py" ]; then
+  echo "V2 worker not found after sync: $INSTALL_DIR/V2/utat_worker_v2/cli.py" >&2
+  exit 3
+fi
+
+say "recreate venv: $VENV_DIR"
+rm -rf "$VENV_DIR"
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/python" -m pip install -U pip setuptools wheel
+# Install legacy src package too, because V2 intentionally reuses src/utat/config.py for the code-pinned Multica token.
+"$VENV_DIR/bin/python" -m pip install -e "$INSTALL_DIR"
+
+if [ "$FRESH_STATE" = "1" ]; then
+  say "clear state: $STATE_HOME"
+  rm -rf "$STATE_HOME"
+fi
+if [ "$FRESH_WORK" = "1" ]; then
+  say "clear work root: $WORK_ROOT"
+  rm -rf "$WORK_ROOT"
+fi
+if [ "$FRESH_ARCHIVE" = "1" ]; then
+  say "clear archive root: $ARCHIVE_ROOT"
+  rm -rf "$ARCHIVE_ROOT"
+fi
+mkdir -p "$STATE_HOME" "$WORK_ROOT" "$ARCHIVE_ROOT"
+
+cat > "$ENV_FILE" <<EOF
+# Generated by install-worker-v2.sh. Safe to source from shell scripts.
+export UTAT_WORKER_REPO="$INSTALL_DIR"
+export UTAT_V2_HOME="$V2_HOME"
+export UTAT_V2_STATE_HOME="$STATE_HOME"
+export UTAT_V2_DB="$STATE_HOME/queue.db"
+export UTAT_WORK_ROOT="$WORK_ROOT"
+export UTAT_ARCHIVE_ROOT="$ARCHIVE_ROOT"
+export UTAT_V2_NODE_ID="$NODE_ID"
+export UTAT_WORKSPACE_ID="$WORKSPACE_ID"
+export UTAT_MULTICA_SERVER_URL="$MULTICA_SERVER_URL"
+export MULTICA_WORKSPACE_ID="$WORKSPACE_ID"
+export MULTICA_SERVER_URL="$MULTICA_SERVER_URL"
+export UTAT_V2_WEB_HOST="$WEB_HOST"
+export UTAT_V2_WEB_PORT="$WEB_PORT"
+export PATH="$BIN_DIR:\$PATH"
+export PYTHONPATH="$INSTALL_DIR/V2:$INSTALL_DIR/src\${PYTHONPATH:+:\$PYTHONPATH}"
+EOF
+chmod 0644 "$ENV_FILE"
+
+cat > "$BIN_DIR/utat-worker-v2" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ENV_FILE"
+exec "$VENV_DIR/bin/python" -m utat_worker_v2.cli "\$@"
+EOF
+chmod +x "$BIN_DIR/utat-worker-v2"
+
+cat > "$BIN_DIR/utat-worker-v2-web" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ENV_FILE"
+exec "$VENV_DIR/bin/python" -m utat_worker_v2.cli serve --host "\${UTAT_V2_WEB_HOST:-$WEB_HOST}" --port "\${UTAT_V2_WEB_PORT:-$WEB_PORT}"
+EOF
+chmod +x "$BIN_DIR/utat-worker-v2-web"
+
+cat > "$BIN_DIR/utat-worker-v2-worker" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ENV_FILE"
+exec "$VENV_DIR/bin/python" -m utat_worker_v2.cli worker
+EOF
+chmod +x "$BIN_DIR/utat-worker-v2-worker"
+
+# Permanently expose env/path for interactive shells. Keep a managed block so reinstall/uninstall is deterministic.
+START='# >>> utat-worker-v2 >>>'
+END='# <<< utat-worker-v2 <<<'
+mkdir -p "$(dirname "$PROFILE_FILE")"
+touch "$PROFILE_FILE"
+TMP_PROFILE="$(mktemp)"
+awk -v s="$START" -v e="$END" '
+  $0==s {skip=1; next}
+  $0==e {skip=0; next}
+  !skip {print}
+' "$PROFILE_FILE" > "$TMP_PROFILE"
+cat >> "$TMP_PROFILE" <<EOF
+$START
+# AT/UT worker V2 environment. Added by install-worker-v2.sh
+[ -f "$ENV_FILE" ] && source "$ENV_FILE"
+$END
+EOF
+mv "$TMP_PROFILE" "$PROFILE_FILE"
+
+say "verify"
+"$BIN_DIR/utat-worker-v2" status >/tmp/utat-worker-v2-install-status.json
+cat /tmp/utat-worker-v2-install-status.json
+
+say "installed"
+echo "Command: utat-worker-v2 status"
+echo "Worker : utat-worker-v2-worker"
+echo "Web    : utat-worker-v2-web  # http://<machine-ip>:$WEB_PORT/"
+echo "Env    : $ENV_FILE"
+echo "Profile: $PROFILE_FILE"
+echo "Uninstall: bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/$BRANCH/scripts/uninstall-worker-v2.sh)\""
