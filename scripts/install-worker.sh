@@ -98,9 +98,9 @@ fi
 say "recreate venv: $VENV_DIR"
 rm -rf "$VENV_DIR"
 python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/python" -m pip install -U pip setuptools wheel
-# Install legacy src package too, because The implementation intentionally reuses src/utat/config.py for the code-pinned Multica token.
-"$VENV_DIR/bin/python" -m pip install -e "$INSTALL_DIR"
+# The worker has no third-party Python dependencies. Do not run pip here:
+# some execution nodes cannot access files.pythonhosted.org through the proxy.
+# Runtime imports are resolved by PYTHONPATH in the generated wrappers.
 
 if [ "$FRESH_STATE" = "1" ]; then
   say "clear state: $STATE_HOME"

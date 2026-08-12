@@ -221,7 +221,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/uta
 
 - 仓库同步到 `~/WorkSpace/utat-worker`；如果本机已有源码且只想本地验证，可设置 `SKIP_REPO_FETCH=1`；
 - 每次安装都会 `git reset --hard origin/master && git clean -fdx`，保证源码是远端最新干净版本；
-- 每次安装都会重建 `~/.utat-worker/venv`；
+- 每次安装都会重建 `~/.utat-worker/venv`，但不会执行联网 `pip install`；worker 依赖仓库内置代码和 `PYTHONPATH`；
 - 默认清理队列状态 `~/.utat-node`，避免旧任务影响新验证；
 - 默认清理源码工作区 `~/atut-work`，保证执行代码环境干净；
 - 默认保留归档目录 `~/Documents/ATUT-WORK-Archive`；如需连历史归档一起清理，设置 `FRESH_ARCHIVE=1` 或 `FRESH_DATA=1`；
