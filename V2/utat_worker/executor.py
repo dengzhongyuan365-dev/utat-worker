@@ -16,6 +16,26 @@ def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._@\-\u4e00-\u9fff]+", "_", s or "unknown")[:120]
 
 
+DEFAULT_GITHUB_PROXY = "http://proxy02.uniontech.com:3128"
+
+
+def git_env_for(repo_url: str) -> Dict[str, str]:
+    """Return git-only proxy environment for GitHub repositories."""
+    if "github.com" not in (repo_url or "").lower():
+        return {}
+    http_proxy = os.environ.get("UTAT_GITHUB_HTTP_PROXY") or os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY") or DEFAULT_GITHUB_PROXY
+    https_proxy = os.environ.get("UTAT_GITHUB_HTTPS_PROXY") or os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY") or DEFAULT_GITHUB_PROXY
+    no_proxy = os.environ.get("no_proxy") or os.environ.get("NO_PROXY") or "localhost,127.0.0.1,.uniontech.com,agent-dev.uniontech.com,agentapi-dev.uniontech.com,gerrit.uniontech.com,gitlabcd.uniontech.com"
+    return {
+        "http_proxy": http_proxy,
+        "https_proxy": https_proxy,
+        "HTTP_PROXY": http_proxy,
+        "HTTPS_PROXY": https_proxy,
+        "no_proxy": no_proxy,
+        "NO_PROXY": no_proxy,
+    }
+
+
 def run_cmd(cmd: List[str], cwd: Path, log: Path, timeout: int = 7200, env: Dict[str, str] | None = None) -> Tuple[int, str]:
     merged = dict(os.environ)
     if env:
@@ -35,22 +55,26 @@ def ensure_source(payload: TaskPayload, cfg: WorkerConfig, logs: Path, progress:
     work_root.parent.mkdir(parents=True, exist_ok=True)
     artifacts: List[Dict[str, Any]] = []
     log = logs / "source-sync.log"
+    git_env = git_env_for(payload.repo_url)
+    if git_env:
+        with log.open("a", encoding="utf-8") as f:
+            f.write(f"Using GitHub proxy: https_proxy={git_env.get('https_proxy')} http_proxy={git_env.get('http_proxy')}\n")
     if work_root.exists() and (work_root / ".git").exists():
         if payload.no_code_update:
             rc = 0
             with log.open("a", encoding="utf-8") as f:
                 f.write("NO_CODE_UPDATE=true; skip git update\n")
         else:
-            rc, _ = run_cmd(["git", "fetch", "--all", "--prune"], work_root, log, timeout=1800)
+            rc, _ = run_cmd(["git", "fetch", "--all", "--prune"], work_root, log, timeout=1800, env=git_env)
             if rc == 0:
                 # Works for GitHub and normal Gerrit branch refs. If exact branch is a ref, git checkout handles it.
-                rc, _ = run_cmd(["git", "checkout", payload.branch], work_root, log, timeout=600)
+                rc, _ = run_cmd(["git", "checkout", payload.branch], work_root, log, timeout=600, env=git_env)
             if rc == 0:
-                rc, _ = run_cmd(["git", "pull", "--ff-only", "origin", payload.branch], work_root, log, timeout=1800)
+                rc, _ = run_cmd(["git", "pull", "--ff-only", "origin", payload.branch], work_root, log, timeout=1800, env=git_env)
     else:
         if work_root.exists():
             shutil.rmtree(work_root)
-        rc, _ = run_cmd(["git", "clone", "--branch", payload.branch, payload.repo_url, str(work_root)], work_root.parent, log, timeout=3600)
+        rc, _ = run_cmd(["git", "clone", "--branch", payload.branch, payload.repo_url, str(work_root)], work_root.parent, log, timeout=3600, env=git_env)
     artifacts.append({"name": "source-sync.log", "path": str(log)})
     if rc != 0:
         raise RuntimeError(f"源码同步失败，详见 {log}")
