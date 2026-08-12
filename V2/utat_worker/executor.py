@@ -65,16 +65,16 @@ def ensure_source(payload: TaskPayload, cfg: WorkerConfig, logs: Path, progress:
             with log.open("a", encoding="utf-8") as f:
                 f.write("NO_CODE_UPDATE=true; skip git update\n")
         else:
-            rc, _ = run_cmd(["git", "fetch", "--all", "--prune"], work_root, log, timeout=1800, env=git_env)
+            rc, _ = run_cmd(["git", "fetch", "--progress", "--all", "--prune"], work_root, log, timeout=1800, env=git_env)
             if rc == 0:
                 # Works for GitHub and normal Gerrit branch refs. If exact branch is a ref, git checkout handles it.
                 rc, _ = run_cmd(["git", "checkout", payload.branch], work_root, log, timeout=600, env=git_env)
             if rc == 0:
-                rc, _ = run_cmd(["git", "pull", "--ff-only", "origin", payload.branch], work_root, log, timeout=1800, env=git_env)
+                rc, _ = run_cmd(["git", "pull", "--progress", "--ff-only", "origin", payload.branch], work_root, log, timeout=1800, env=git_env)
     else:
         if work_root.exists():
             shutil.rmtree(work_root)
-        rc, _ = run_cmd(["git", "clone", "--branch", payload.branch, payload.repo_url, str(work_root)], work_root.parent, log, timeout=3600, env=git_env)
+        rc, _ = run_cmd(["git", "clone", "--progress", "--branch", payload.branch, payload.repo_url, str(work_root)], work_root.parent, log, timeout=3600, env=git_env)
     artifacts.append({"name": "source-sync.log", "path": str(log)})
     if rc != 0:
         raise RuntimeError(f"源码同步失败，详见 {log}")
