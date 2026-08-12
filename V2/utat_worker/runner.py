@@ -12,7 +12,7 @@ from .models import TaskPayload, now_ts
 from .multica import MulticaClient, MulticaError
 
 
-class WorkerV2:
+class Worker:
     def __init__(self, cfg: WorkerConfig | None = None, db: QueueDB | None = None):
         self.cfg = cfg or load_config()
         self.db = db or QueueDB(self.cfg.db_path)

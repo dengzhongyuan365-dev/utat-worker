@@ -4,7 +4,7 @@
 
 ```bash
 PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src \
-python3 -m utat_worker_v2.cli serve --host 0.0.0.0 --port 8766
+python3 -m utat_worker.cli serve --host 0.0.0.0 --port 8766
 ```
 
 ## 浏览器访问

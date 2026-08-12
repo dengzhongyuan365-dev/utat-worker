@@ -79,7 +79,7 @@ class MulticaClient:
         self.json(["issue", "metadata", "set", issue_id, "--key", key, "--value", value, "--type", value_type], timeout=60)
 
     def comment_add(self, issue_id: str, content: str, attachments: Iterable[str] = (), cwd: str | Path | None = None) -> None:
-        tmpdir = Path(cwd) if cwd else Path(tempfile.mkdtemp(prefix="utat-v2-comment-"))
+        tmpdir = Path(cwd) if cwd else Path(tempfile.mkdtemp(prefix="utat-comment-"))
         tmpdir.mkdir(parents=True, exist_ok=True)
         content_path = tmpdir / "comment.md"
         content_path.write_text(content, encoding="utf-8")

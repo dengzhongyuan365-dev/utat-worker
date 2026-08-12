@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .runner import WorkerV2
+from .runner import Worker
 from .web import StatusServer
 
 
@@ -13,7 +13,7 @@ def load_payload(path: str) -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="utat-worker-v2")
+    ap = argparse.ArgumentParser(prog="utat-worker")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("submit")
@@ -32,7 +32,7 @@ def main() -> int:
     p.add_argument("--port", type=int, default=0)
 
     args = ap.parse_args()
-    worker = WorkerV2()
+    worker = Worker()
     if args.cmd == "submit":
         out = worker.submit(load_payload(args.payload_file), rerun=args.rerun, check_issue=not args.no_check_issue)
     elif args.cmd == "status":

@@ -1,6 +1,6 @@
-# utat-worker V2
+# utat-worker
 
-V2 worker 是 AT/UT 研发自测的新本地执行程序。V2 不再兼容旧 worker 双入口，验证时 agent/skill/worker 一起升级。
+worker 是 AT/UT 研发自测的新本地执行程序。V2 不再兼容旧 worker 双入口，验证时 agent/skill/worker 一起升级。
 
 ## 核心能力
 
@@ -19,12 +19,12 @@ V2 worker 是 AT/UT 研发自测的新本地执行程序。V2 不再兼容旧 wo
 ## CLI
 
 ```bash
-PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker_v2.cli submit --payload-file payload.json
-PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker_v2.cli submit --payload-file payload.json --rerun
-PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker_v2.cli status
-PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker_v2.cli run-once
-PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker_v2.cli worker
-PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker_v2.cli serve --host 0.0.0.0 --port 8766
+PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker.cli submit --payload-file payload.json
+PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker.cli submit --payload-file payload.json --rerun
+PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker.cli status
+PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker.cli run-once
+PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker.cli worker
+PYTHONPATH=/home/uos/WorkSpace/utat-worker/V2:/home/uos/WorkSpace/utat-worker/src python3 -m utat_worker.cli serve --host 0.0.0.0 --port 8766
 ```
 
 ## Web 进度页

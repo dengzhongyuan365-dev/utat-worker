@@ -60,7 +60,7 @@ def render_page(status: Dict[str, Any]) -> str:
 <head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="5">
-<title>AT/UT Worker V2 进度</title>
+<title>AT/UT Worker 进度</title>
 <style>
 body {{ margin:0; padding:22px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif; background:#f5f7fb; color:#111827; }}
 .header {{ display:flex; justify-content:space-between; align-items:flex-start; gap:18px; margin-bottom:16px; }}
@@ -89,7 +89,7 @@ a {{ color:#2563eb; text-decoration:none; font-weight:600; }}
 <body>
 <div class="header">
   <div>
-    <h1>AT/UT Worker V2 进度</h1>
+    <h1>AT/UT Worker 进度</h1>
     <div class="meta">自动刷新：5 秒　当前时间：{now}<br>DB：{html.escape(str(status.get('db') or ''))}</div>
   </div>
   <div class="meta">接口：<a href="/api/status">/api/status</a></div>
@@ -150,5 +150,5 @@ class StatusServer:
 
     def serve(self, host: str, port: int) -> None:
         httpd = ThreadingHTTPServer((host, port), self.handler())
-        print(f"AT/UT Worker V2 status page: http://{host}:{port}")
+        print(f"AT/UT Worker status page: http://{host}:{port}")
         httpd.serve_forever()
