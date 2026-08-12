@@ -23,10 +23,47 @@ KEEP_DATA="${KEEP_DATA:-0}"
 say() { printf '[utat-worker-v2] %s\n' "$*"; }
 
 say "stop local V2 worker/web processes if any"
-pkill -f '[u]tat_worker_v2.cli worker' >/dev/null 2>&1 || true
-pkill -f '[u]tat_worker_v2.cli serve' >/dev/null 2>&1 || true
-pkill -f '[u]tat-worker-v2-worker' >/dev/null 2>&1 || true
-pkill -f '[u]tat-worker-v2-web' >/dev/null 2>&1 || true
+python3 - <<'PYSTOP'
+import os, signal, time
+patterns = [
+    "utat_worker_v2.cli worker",
+    "utat_worker_v2.cli serve",
+    "utat-worker-v2-worker",
+    "utat-worker-v2-web",
+]
+self_pid = os.getpid()
+exclude = {self_pid, os.getppid()}
+pid = os.getppid()
+while pid and pid > 1:
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="ignore") as f:
+            parts = f.read().split()
+            ppid = int(parts[3]) if len(parts) > 3 else 0
+    except Exception:
+        break
+    exclude.add(pid)
+    pid = ppid
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    pid = int(name)
+    if pid in exclude:
+        continue
+    try:
+        raw = open(f"/proc/{pid}/cmdline", "rb").read()
+    except Exception:
+        continue
+    cmd = raw.replace(b"\x00", b" " ).decode("utf-8", "ignore")
+    if any(p in cmd for p in patterns):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"stopped pid={pid} cmd={cmd[:160]}")
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            print(f"no permission to stop pid={pid} cmd={cmd[:160]}")
+time.sleep(0.5)
+PYSTOP
 
 say "remove command wrappers"
 rm -f "$BIN_DIR/utat-worker-v2" "$BIN_DIR/utat-worker-v2-worker" "$BIN_DIR/utat-worker-v2-web"

@@ -56,11 +56,7 @@ if [ "$INSTALL_MULTICA" = "1" ]; then
   need_cmd curl
 fi
 
-say "stop existing V2 worker/web processes if any"
-pkill -f '[u]tat_worker_v2.cli worker' >/dev/null 2>&1 || true
-pkill -f '[u]tat_worker_v2.cli serve' >/dev/null 2>&1 || true
-pkill -f '[u]tat-worker-v2-worker' >/dev/null 2>&1 || true
-pkill -f '[u]tat-worker-v2-web' >/dev/null 2>&1 || true
+say "skip process stop in installer to avoid killing curl|bash shell; use uninstall script to stop old worker/web if needed"
 
 if [ "$INSTALL_MULTICA" = "1" ] && ! command -v multica >/dev/null 2>&1; then
   say "install multica cli"
