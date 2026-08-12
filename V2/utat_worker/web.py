@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
 
@@ -33,6 +35,17 @@ UT_STEPS = [
     ("completed", "完成"),
 ]
 STEP_LABELS = dict(AT_STEPS + UT_STEPS)
+STEP_LOGS = {
+    "source_sync": "source-sync.log",
+    "build_deps": "build-dep.log",
+    "build": "build.log",
+    "install": "install.log",
+    "at_test": "at.log",
+    "ut_test": "ut.log",
+    "archive": "result.json",
+    "callback_pending": "worker.log",
+    "completed": "result.json",
+}
 TERMINAL_BAD = {"callback_failed", "deleted", "orphan", "failed_to_submit"}
 TERMINAL_DONE = {"completed"}
 
@@ -81,6 +94,7 @@ def _step_chain(t: Dict[str, Any]) -> str:
     progress = int(t.get("progress") or 0)
     steps = _steps_for(str(t.get("task_type") or ""))
     idx = _step_index(steps, current, state, progress)
+    task_id = html.escape(str(t.get("task_id") or ""), quote=True)
     parts: List[str] = []
     for i, (key, label) in enumerate(steps):
         cls = "pending"
@@ -88,8 +102,98 @@ def _step_chain(t: Dict[str, Any]) -> str:
             cls = "done"
         elif i == idx:
             cls = "current bad" if state in TERMINAL_BAD else "current"
-        parts.append(f'<span class="step {cls}" title="{html.escape(key)}">{html.escape(label)}</span>')
+        title = html.escape(key)
+        label_html = html.escape(label)
+        if key in STEP_LOGS and task_id:
+            href = f"/log?task_id={task_id}&step={html.escape(key, quote=True)}"
+            parts.append(f'<a class="step {cls}" title="{title}" href="{href}" target="_blank" rel="noopener noreferrer">{label_html}</a>')
+        else:
+            parts.append(f'<span class="step {cls}" title="{title}">{label_html}</span>')
     return '<div class="steps">' + '<span class="arrow">→</span>'.join(parts) + '</div>'
+
+
+def _safe_log_text(path: Path, tail_bytes: int = 200_000) -> tuple[str, bool]:
+    try:
+        if not path.exists() or not path.is_file():
+            return f"日志文件不存在：{path}", False
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > tail_bytes:
+                f.seek(max(0, size - tail_bytes))
+                data = f.read()
+                prefix = f"[仅显示最后 {tail_bytes} bytes，完整文件：{path}]\n\n".encode()
+                return (prefix + data).decode("utf-8", "replace"), True
+            return f.read().decode("utf-8", "replace"), True
+    except Exception as exc:
+        return f"读取日志失败：{exc}\npath={path}", False
+
+
+def _log_path_for(db: QueueDB, cfg: WorkerConfig, task_id: str, step: str) -> tuple[Path | None, Dict[str, Any] | None, str]:
+    task = db.get_task(task_id)
+    if not task:
+        return None, None, "任务不存在"
+    log_name = STEP_LOGS.get(step)
+    if not log_name:
+        return None, task, f"步骤没有对应日志：{step}"
+    if log_name == "worker.log":
+        return cfg.state_home / "worker.log", task, ""
+    archive_path = task.get("archive_path")
+    if not archive_path:
+        payload = task.get("payload") or {}
+        root = payload.get("root_issue_id") or task.get("root_issue_id") or "root"
+        app = payload.get("app_issue_id") or task.get("app_issue_id") or task.get("app_name") or "unknown"
+        issue = task.get("issue_id") or "unknown"
+        attempt = task.get("attempt") or 1
+        # Keep in sync with executor.safe_name enough for generated issue ids.
+        def safe(x: object) -> str:
+            import re
+            return re.sub(r"[^A-Za-z0-9._@\-\u4e00-\u9fff]+", "_", str(x) or "unknown")[:120]
+        archive_path = str(cfg.archive_root / safe(root) / safe(app) / safe(issue) / f"attempt-{attempt}")
+    if log_name == "result.json":
+        return Path(archive_path) / "result.json", task, ""
+    return Path(archive_path) / "logs" / log_name, task, ""
+
+
+def render_log_page(cfg: WorkerConfig, db: QueueDB, task_id: str, step: str) -> str:
+    path, task, err = _log_path_for(db, cfg, task_id, step)
+    label = STEP_LABELS.get(step, step)
+    if path is None:
+        text, ok = err, False
+        path_text = "-"
+    else:
+        text, ok = _safe_log_text(path)
+        path_text = str(path)
+    title = f"{label} 日志 - {task_id[:8]}"
+    status = task.get("state") if task else "-"
+    current = task.get("current_step") if task else "-"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="5">
+<title>{html.escape(title)}</title>
+<style>
+body {{ margin:0; padding:18px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif; background:#0f172a; color:#e5e7eb; }}
+a {{ color:#93c5fd; }}
+.header {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:12px; }}
+h1 {{ margin:0 0 8px; font-size:20px; }}
+.meta {{ color:#cbd5e1; font-size:13px; line-height:1.6; }}
+.bad {{ color:#fecaca; }}
+pre {{ white-space:pre-wrap; word-break:break-word; background:#020617; border:1px solid #334155; border-radius:10px; padding:14px; line-height:1.45; font-size:12px; }}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <h1>{html.escape(title)}</h1>
+    <div class="meta">状态：{html.escape(str(status))}　当前步骤：{html.escape(str(current))}<br>文件：{html.escape(path_text)}</div>
+  </div>
+  <div class="meta"><a href="/">返回队列</a> | <a href="/api/log?task_id={html.escape(task_id, quote=True)}&step={html.escape(step, quote=True)}">JSON接口</a></div>
+</div>
+<pre class="{'' if ok else 'bad'}">{html.escape(text)}</pre>
+</body>
+</html>"""
+
 
 
 def _row_class(state: str) -> str:
@@ -178,7 +282,7 @@ tr.bad td {{ background:#fef2f2; }}
 .raw-step {{ margin-top:3px; color:#94a3b8; font-size:11px; }}
 .step-cell {{ min-width:420px; }}
 .steps {{ display:flex; flex-wrap:wrap; align-items:center; gap:4px; line-height:1.9; }}
-.step {{ display:inline-block; padding:2px 7px; border-radius:999px; border:1px solid #cbd5e1; background:#f8fafc; color:#64748b; white-space:nowrap; }}
+.step {{ display:inline-block; text-decoration:none; padding:2px 7px; border-radius:999px; border:1px solid #cbd5e1; background:#f8fafc; color:#64748b; white-space:nowrap; }}
 .step.done {{ background:#dcfce7; border-color:#86efac; color:#166534; }}
 .step.current {{ background:#2563eb; border-color:#1d4ed8; color:#fff; font-weight:700; }}
 .step.current.bad {{ background:#dc2626; border-color:#b91c1c; }}
@@ -243,6 +347,22 @@ class StatusServer:
                 data = outer.status(issue_id=issue_id)
                 if parsed.path == "/api/status":
                     self._send(json.dumps(data, ensure_ascii=False, indent=2, default=str).encode("utf-8"), "application/json; charset=utf-8")
+                    return
+                if parsed.path == "/api/log":
+                    task_id = (qs.get("task_id") or [""])[0]
+                    step = (qs.get("step") or [""])[0]
+                    path, task, err = _log_path_for(outer.db, outer.cfg, task_id, step)
+                    if path is None:
+                        payload = {"ok": False, "error": err, "task_id": task_id, "step": step}
+                    else:
+                        text, ok = _safe_log_text(path)
+                        payload = {"ok": ok, "task_id": task_id, "step": step, "path": str(path), "task": task, "text": text}
+                    self._send(json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8"), "application/json; charset=utf-8")
+                    return
+                if parsed.path == "/log":
+                    task_id = (qs.get("task_id") or [""])[0]
+                    step = (qs.get("step") or [""])[0]
+                    self._send(render_log_page(outer.cfg, outer.db, task_id, step).encode("utf-8"))
                     return
                 if parsed.path in {"/", "/index.html"}:
                     self._send(render_page(data).encode("utf-8"))
