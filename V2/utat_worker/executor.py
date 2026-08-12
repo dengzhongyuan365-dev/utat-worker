@@ -87,12 +87,17 @@ def ensure_source(payload: TaskPayload, cfg: WorkerConfig, logs: Path, progress:
             with log.open("a", encoding="utf-8") as f:
                 f.write("NO_CODE_UPDATE=true; skip git update\n")
         else:
-            rc, _ = run_cmd(["git", "fetch", "--progress", "--all", "--prune"], work_root, log, timeout=1800, env=git_env)
-            if rc == 0:
-                # Works for GitHub and normal Gerrit branch refs. If exact branch is a ref, git checkout handles it.
-                rc, _ = run_cmd(["git", "checkout", payload.branch], work_root, log, timeout=600, env=git_env)
-            if rc == 0:
+            fetch_rc, _ = run_cmd(["git", "fetch", "--progress", "--all", "--prune"], work_root, log, timeout=1800, env=git_env)
+            if fetch_rc != 0:
+                with log.open("a", encoding="utf-8") as f:
+                    f.write("WARNING: git fetch failed; fallback to existing local checkout.\n")
+            # Works for GitHub and normal Gerrit branch refs. If exact branch is a ref, git checkout handles it.
+            rc, _ = run_cmd(["git", "checkout", payload.branch], work_root, log, timeout=600, env=git_env)
+            if rc == 0 and fetch_rc == 0:
                 rc, _ = run_cmd(["git", "pull", "--progress", "--ff-only", "origin", payload.branch], work_root, log, timeout=1800, env=git_env)
+            elif rc == 0 and fetch_rc != 0:
+                with log.open("a", encoding="utf-8") as f:
+                    f.write("WARNING: using existing local checkout because fetch failed.\n")
     else:
         if work_root.exists():
             shutil.rmtree(work_root)
