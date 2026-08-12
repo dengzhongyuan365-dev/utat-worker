@@ -31,7 +31,6 @@ WEB_HOST="${WEB_HOST:-${UTAT_V2_WEB_HOST:-0.0.0.0}}"
 WEB_PORT="${WEB_PORT:-${UTAT_V2_WEB_PORT:-8766}}"
 MULTICA_SERVER_URL="${MULTICA_SERVER_URL:-${UTAT_MULTICA_SERVER_URL:-https://agentapi-dev.uniontech.com}}"
 MULTICA_APP_URL="${MULTICA_APP_URL:-https://agent-dev.uniontech.com}"
-INSTALL_MULTICA="${INSTALL_MULTICA:-1}"
 FRESH_SOURCE="${FRESH_SOURCE:-1}"
 SKIP_REPO_FETCH="${SKIP_REPO_FETCH:-0}"
 FRESH_STATE="${FRESH_STATE:-1}"
@@ -52,39 +51,15 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2
 
 need_cmd git
 need_cmd python3
-if [ "$INSTALL_MULTICA" = "1" ]; then
-  need_cmd curl
-fi
 
 say "skip process stop in installer to avoid killing curl|bash shell; use uninstall script to stop old worker/web if needed"
 
-if [ "$INSTALL_MULTICA" = "1" ] && ! command -v multica >/dev/null 2>&1; then
-  say "install multica cli"
-  curl -fsSL "$MULTICA_SERVER_URL/downloads/install.sh" | bash
-fi
+# Do not install/login/setup Multica here. This script only installs AT/UT worker V2.
+# The runtime/agent environment is expected to already provide a working multica CLI.
 if command -v multica >/dev/null 2>&1; then
-  say "setup multica self-host with 20s timeout"
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 20s multica setup self-host --server-url "$MULTICA_SERVER_URL" --app-url "$MULTICA_APP_URL"       || say "warning: multica setup skipped/failed/timeout; worker will still use code-pinned token during callback"
-  else
-    multica setup self-host --server-url "$MULTICA_SERVER_URL" --app-url "$MULTICA_APP_URL" &
-    setup_pid=$!
-    for _ in $(seq 1 20); do
-      if ! kill -0 "$setup_pid" >/dev/null 2>&1; then
-        wait "$setup_pid" || say "warning: multica setup failed; worker will still use code-pinned token during callback"
-        setup_pid=""
-        break
-      fi
-      sleep 1
-    done
-    if [ -n "${setup_pid:-}" ]; then
-      kill "$setup_pid" >/dev/null 2>&1 || true
-      wait "$setup_pid" >/dev/null 2>&1 || true
-      say "warning: multica setup timeout; worker will still use code-pinned token during callback"
-    fi
-  fi
+  say "multica cli found; skip setup/login"
 else
-  say "warning: multica cli not found; callback will fail until multica is installed"
+  say "warning: multica cli not found; callback will fail until the runtime installs multica"
 fi
 mkdir -p "$HOME/WorkSpace" "$V2_HOME" "$CONFIG_DIR" "$BIN_DIR" "$WORK_ROOT" "$ARCHIVE_ROOT"
 

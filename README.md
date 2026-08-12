@@ -227,7 +227,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/uta
 - 默认保留归档目录 `~/Documents/ATUT-WORK-Archive`；如需连历史归档一起清理，设置 `FRESH_ARCHIVE=1` 或 `FRESH_DATA=1`；
 - 环境变量写入 `~/.config/utat-worker-v2/env`，并在 `~/.bashrc` 增加受控 block，打开新 shell 后永久生效；
 - 命令入口写入 `~/.local/bin`；
-- 如果本机缺少 `multica` CLI，默认会执行 `https://agentapi-dev.uniontech.com/downloads/install.sh` 安装，并执行 `multica setup self-host`。
+- 安装脚本不会安装、登录或配置 `multica`；运行环境应提前具备可用的 `multica` CLI。
 
 可选参数示例：
 
@@ -236,7 +236,6 @@ NODE_ID=local \
 WEB_PORT=8766 \
 FRESH_WORK=1 \
 FRESH_ARCHIVE=0 \
-INSTALL_MULTICA=1 \
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/dengzhongyuan365-dev/utat-worker/master/scripts/install-worker-v2.sh)"
 ```
 
