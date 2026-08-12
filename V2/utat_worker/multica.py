@@ -76,7 +76,7 @@ class MulticaClient:
         if not isinstance(value, str):
             value = json.dumps(value, ensure_ascii=False)
             value_type = "json"
-        self.json(["issue", "metadata", "set", issue_id, "--key", key, "--value", value, "--type", value_type], timeout=60)
+        self.json(["issue", "metadata", "set", issue_id, "--key", key, "--value", value, "--type", ("string" if value_type == "json" else value_type)], timeout=60)
 
     def comment_add(self, issue_id: str, content: str, attachments: Iterable[str] = (), cwd: str | Path | None = None) -> None:
         tmpdir = Path(cwd) if cwd else Path(tempfile.mkdtemp(prefix="utat-comment-"))

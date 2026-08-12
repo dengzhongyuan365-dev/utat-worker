@@ -36,6 +36,28 @@ def git_env_for(repo_url: str) -> Dict[str, str]:
     }
 
 
+def sudo_env() -> Dict[str, str]:
+    # Compatibility with the old worker and existing Multica env naming,
+    # including the historical typo used in some agent envs.
+    password = (
+        os.environ.get("INSTALL_PASSWORD")
+        or os.environ.get("install_Passwoerd")
+        or os.environ.get("INSTALL_PASSWOERD")
+        or os.environ.get("SUDO_PASSWORD")
+        or "1"
+    )
+    return {"INSTALL_PASSWORD": password}
+
+
+def sudo_shell_cmd(args: List[str]) -> List[str]:
+    quoted = " ".join(sh_quote(a) for a in args)
+    return ["bash", "-lc", f"printf '%s\\n' \"$INSTALL_PASSWORD\" | sudo -S -p '' {quoted}"]
+
+
+def sh_quote(s: str) -> str:
+    return "'" + str(s).replace("'", "'\''") + "'"
+
+
 def run_cmd(cmd: List[str], cwd: Path, log: Path, timeout: int = 7200, env: Dict[str, str] | None = None) -> Tuple[int, str]:
     merged = dict(os.environ)
     if env:
@@ -138,7 +160,7 @@ def run_at(payload: TaskPayload, root: Path, logs: Path, progress: Callable[[str
     if progress:
         progress("build_deps", 25, "安装构建依赖：sudo apt build-dep -y .")
     build_dep_log = logs / "build-dep.log"
-    rc, _ = run_cmd(["sudo", "apt", "build-dep", "-y", "."], root, build_dep_log, timeout=3600)
+    rc, _ = run_cmd(sudo_shell_cmd(["apt", "build-dep", "-y", "."]), root, build_dep_log, timeout=3600, env=sudo_env())
     artifacts.append({"name": "build-dep.log", "path": str(build_dep_log)})
     if rc != 0:
         return "failed", {"passed": 0, "failed": 0, "skipped": 0, "crashed": 0, "total": 0, "pass_rate": "0%", "line_coverage": "未产出", "function_coverage": "未产出", "metric_source": "build_dep_failed"}, artifacts
@@ -161,7 +183,7 @@ def run_at(payload: TaskPayload, root: Path, logs: Path, progress: Callable[[str
     if progress:
         progress("install", 65, "安装真实生成的 deb：sudo dpkg -i")
     install_log = logs / "install.log"
-    rc, _ = run_cmd(["sudo", "dpkg", "-i", *[str(p) for p in debs]], root, install_log, timeout=3600)
+    rc, _ = run_cmd(sudo_shell_cmd(["dpkg", "-i", *[str(p) for p in debs]]), root, install_log, timeout=3600, env=sudo_env())
     artifacts.append({"name": "install.log", "path": str(install_log)})
     if rc != 0:
         return "failed", {"passed": 0, "failed": 0, "skipped": 0, "crashed": 0, "total": 0, "pass_rate": "0%", "line_coverage": "未产出", "function_coverage": "未产出", "metric_source": "install_failed"}, artifacts
