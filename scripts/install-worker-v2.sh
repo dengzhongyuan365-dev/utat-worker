@@ -63,8 +63,26 @@ if [ "$INSTALL_MULTICA" = "1" ] && ! command -v multica >/dev/null 2>&1; then
   curl -fsSL "$MULTICA_SERVER_URL/downloads/install.sh" | bash
 fi
 if command -v multica >/dev/null 2>&1; then
-  say "setup multica self-host"
-  multica setup self-host --server-url "$MULTICA_SERVER_URL" --app-url "$MULTICA_APP_URL" >/dev/null 2>&1 || true
+  say "setup multica self-host with 20s timeout"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 20s multica setup self-host --server-url "$MULTICA_SERVER_URL" --app-url "$MULTICA_APP_URL"       || say "warning: multica setup skipped/failed/timeout; worker will still use code-pinned token during callback"
+  else
+    multica setup self-host --server-url "$MULTICA_SERVER_URL" --app-url "$MULTICA_APP_URL" &
+    setup_pid=$!
+    for _ in $(seq 1 20); do
+      if ! kill -0 "$setup_pid" >/dev/null 2>&1; then
+        wait "$setup_pid" || say "warning: multica setup failed; worker will still use code-pinned token during callback"
+        setup_pid=""
+        break
+      fi
+      sleep 1
+    done
+    if [ -n "${setup_pid:-}" ]; then
+      kill "$setup_pid" >/dev/null 2>&1 || true
+      wait "$setup_pid" >/dev/null 2>&1 || true
+      say "warning: multica setup timeout; worker will still use code-pinned token during callback"
+    fi
+  fi
 else
   say "warning: multica cli not found; callback will fail until multica is installed"
 fi
