@@ -20,6 +20,7 @@ def main() -> int:
     p.add_argument("--payload-file", required=True)
     p.add_argument("--rerun", action="store_true")
     p.add_argument("--no-check-issue", action="store_true")
+    p.add_argument("--no-auto-start", action="store_true")
 
     p = sub.add_parser("status")
     p.add_argument("--issue-id", default="")
@@ -34,7 +35,7 @@ def main() -> int:
     args = ap.parse_args()
     worker = Worker()
     if args.cmd == "submit":
-        out = worker.submit(load_payload(args.payload_file), rerun=args.rerun, check_issue=not args.no_check_issue)
+        out = worker.submit(load_payload(args.payload_file), rerun=args.rerun, check_issue=not args.no_check_issue, auto_start=not args.no_auto_start)
     elif args.cmd == "status":
         out = worker.status(issue_id=args.issue_id, task_id=args.task_id)
     elif args.cmd == "run-once":

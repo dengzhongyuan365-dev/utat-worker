@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import subprocess
+import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict
 
 from .config import WorkerConfig, load_config
@@ -18,7 +23,7 @@ class Worker:
         self.db = db or QueueDB(self.cfg.db_path)
         self.mc = MulticaClient(self.cfg)
 
-    def submit(self, payload_data: Dict[str, Any], *, rerun: bool = False, check_issue: bool = True) -> Dict[str, Any]:
+    def submit(self, payload_data: Dict[str, Any], *, rerun: bool = False, check_issue: bool = True, auto_start: bool = True) -> Dict[str, Any]:
         base = TaskPayload.from_dict(payload_data)
         if not base.workspace_id:
             base.workspace_id = self.cfg.workspace_id
@@ -29,6 +34,7 @@ class Worker:
 
         active = self.db.active_for_issue(base.issue_id)
         if active and not rerun:
+            started = self.ensure_worker_started() if auto_start and active.get("state") == "queued" else {"started": False, "reason": "not_needed"}
             return {
                 "ok": True,
                 "action": "already_active",
@@ -37,6 +43,7 @@ class Worker:
                 "attempt": active.get("attempt"),
                 "state": active.get("state"),
                 "queue_position": self.db.queue_position(str(active.get("task_id"))),
+                "worker": started,
             }
 
         current = self.db.current_attempt(base.issue_id)
@@ -67,6 +74,7 @@ class Worker:
             self.mc.metadata_set(base.issue_id, "utat.task_state", "queued")
         except Exception:
             pass
+        started = self.ensure_worker_started() if auto_start else {"started": False, "reason": "auto_start_disabled"}
         return {
             "ok": True,
             "action": "rerun_submitted" if rerun else "submitted",
@@ -76,7 +84,25 @@ class Worker:
             "node_id": base.node_id,
             "state": row.get("state"),
             "queue_position": self.db.queue_position(task_id),
+            "worker": started,
         }
+
+    def ensure_worker_started(self) -> Dict[str, Any]:
+        """Start a background consumer if no live consumer is recorded.
+
+        Submit must return quickly but queued tasks should not require a human to
+        manually run `utat-worker-daemon`.  The real single-consumer guarantee is
+        enforced by worker_loop's file lock, so starting more than once is safe.
+        """
+        self.cfg.state_home.mkdir(parents=True, exist_ok=True)
+        log = self.cfg.state_home / "worker.log"
+        cmd = [sys.executable, "-m", "utat_worker.cli", "worker"]
+        env = dict(os.environ)
+        cwd = str(Path(self.cfg.work_root).expanduser())
+        Path(cwd).mkdir(parents=True, exist_ok=True)
+        with log.open("ab") as f:
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+        return {"started": True, "pid": proc.pid, "log": str(log)}
 
     def run_once(self) -> Dict[str, Any]:
         row = self.db.next_queued(self.cfg.node_id)
@@ -151,15 +177,24 @@ class Worker:
         return "\n".join(lines)
 
     def worker_loop(self) -> None:
-        idle_start = time.time()
-        while True:
-            res = self.run_once()
-            if res.get("action") == "idle":
-                if self.cfg.idle_exit_sec > 0 and time.time() - idle_start >= self.cfg.idle_exit_sec:
-                    break
-                time.sleep(self.cfg.poll_interval_sec)
-            else:
-                idle_start = time.time()
+        self.cfg.state_home.mkdir(parents=True, exist_ok=True)
+        lock_path = self.cfg.state_home / f"worker-{self.cfg.node_id}.lock"
+        with lock_path.open("w") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            lock.write(str(os.getpid()))
+            lock.flush()
+            idle_start = time.time()
+            while True:
+                res = self.run_once()
+                if res.get("action") == "idle":
+                    if self.cfg.idle_exit_sec > 0 and time.time() - idle_start >= self.cfg.idle_exit_sec:
+                        break
+                    time.sleep(self.cfg.poll_interval_sec)
+                else:
+                    idle_start = time.time()
 
     def status(self, issue_id: str = "", task_id: str = "") -> Dict[str, Any]:
         if task_id:
